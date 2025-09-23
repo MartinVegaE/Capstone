@@ -1,0 +1,25 @@
+Cosas para instalar:
+Node.js 18+
+Git
+Docker Desktop
+
+Para correr las consolas:
+cd C:\Capstone\backend
+node index.js
+
+cd C:\Capstone\frontend
+npm run dev
+
+Hacer commit y push:
+cd C:\Capstone
+git init → Inicializa un repositorio Git en la carpeta actual.
+git status → Muestra cambios pendientes, rama actual y estado del repo.
+git add . / git add -A → Agrega cambios al “staging” para el próximo commit.
+git commit -m "mensaje" → Crea un commit con los cambios agregados.
+git branch -M main → Crea/renombra la rama actual a main.
+git remote add origin <URL> → Vincula tu repo local con un remoto (GitHub).
+git remote -v → Lista los remotos configurados.
+git push -u origin main → Sube la rama main al remoto y la deja como upstream.
+git fetch origin → Descarga referencias del remoto (sin fusionar).
+git pull --rebase origin main → Trae cambios remotos y re-aplica tus commits encima (historial más limpio).
+git mv <origen> <destino> → Mueve/renombra archivos o carpetas trackeadas por Git.

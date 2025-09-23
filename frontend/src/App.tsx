@@ -1,55 +1,66 @@
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
 import axios, { AxiosError } from "axios";
 import { useState } from "react";
+
 
 type Producto = { id: number; sku: string; nombre: string; stock: number };
 
 const qc = new QueryClient();
 
 function CrearProducto() {
-  const [form, setForm] = useState({ sku: "", nombre: "", stock: 0 });
+  const qc = useQueryClient();
+  const [form, setForm] = useState({
+    sku: "", nombre: "", stock: 0,
+    marca: "", categoria: "", ubicacion: "", codigoBarras: ""
+  });
   const [msg, setMsg] = useState("");
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setMsg("");
-    try {
-      await api.post("/productos", {
+  const crearMut = useMutation({
+    mutationFn: async () => {
+      const payload = {
         sku: form.sku,
         nombre: form.nombre,
         stock: Number(form.stock) || 0,
-      });
+        marca: form.marca || undefined,
+        categoria: form.categoria || undefined,
+        ubicacion: form.ubicacion || undefined,
+        codigoBarras: form.codigoBarras || undefined
+      };
+      const { data } = await api.post("/productos", payload);
+      return data;
+    },
+    onSuccess: async () => {
       setMsg("✅ Producto creado");
-      setForm({ sku: "", nombre: "", stock: 0 });
-      // refresca la lista si usas React Query:
+      setForm({ sku: "", nombre: "", stock: 0, marca: "", categoria: "", ubicacion: "", codigoBarras: "" });
       await qc.invalidateQueries({ queryKey: ["productos"] });
-    } catch (err: any) {
+    },
+    onError: (err: any) => {
       setMsg("❌ " + (err?.response?.data?.error ?? err.message));
     }
+  });
+
+  function onChange<K extends keyof typeof form>(k: K, v: string | number) {
+    setForm(prev => ({ ...prev, [k]: v as any }));
   }
 
   return (
-    <form onSubmit={handleSubmit} style={{ marginBottom: 16, display: "grid", gap: 8 }}>
-      <input
-        placeholder="SKU"
-        value={form.sku}
-        onChange={e => setForm({ ...form, sku: e.target.value })}
-        required
-      />
-      <input
-        placeholder="Nombre"
-        value={form.nombre}
-        onChange={e => setForm({ ...form, nombre: e.target.value })}
-        required
-      />
-      <input
-        type="number"
-        placeholder="Stock"
-        value={form.stock}
-        onChange={e => setForm({ ...form, stock: Number(e.target.value) })}
-      />
-      <button type="submit">Crear</button>
+    <form onSubmit={(e) => { e.preventDefault(); setMsg(""); crearMut.mutate(); }}
+          style={{ marginBottom: 16, display: "grid", gap: 8 }}>
+      <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }}>
+        <input placeholder="SKU *" value={form.sku} onChange={e => onChange("sku", e.target.value)} required />
+        <input placeholder="Nombre *" value={form.nombre} onChange={e => onChange("nombre", e.target.value)} required />
+        <input placeholder="Marca" value={form.marca} onChange={e => onChange("marca", e.target.value)} />
+        <input placeholder="Categoría" value={form.categoria} onChange={e => onChange("categoria", e.target.value)} />
+        <input placeholder="Ubicación" value={form.ubicacion} onChange={e => onChange("ubicacion", e.target.value)} />
+        <input placeholder="Código de barras" value={form.codigoBarras} onChange={e => onChange("codigoBarras", e.target.value)} />
+        <input type="number" placeholder="Stock" value={form.stock}
+               onChange={e => onChange("stock", Number(e.target.value))} min={0} />
+      </div>
+
+      <button type="submit" disabled={crearMut.isPending}>
+        {crearMut.isPending ? "Creando..." : "Crear producto"}
+      </button>
       {msg && <small>{msg}</small>}
     </form>
   );
