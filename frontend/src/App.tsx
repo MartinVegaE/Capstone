@@ -88,8 +88,42 @@ function Productos() {
           <article key={p.id} style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
             <h3 style={{ margin: 0 }}>{p.nombre}</h3>
             <p style={{ margin: "6px 0" }}>SKU: {p.sku}</p>
-            <strong>Stock: {p.stock}</strong>
-          </article>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <button
+                onClick={async () => {
+                  const nuevo = Math.max(0, (p.stock ?? 0) - 1);
+                  await api.patch(`/productos/${p.id}`, { stock: nuevo });
+                  await qc.invalidateQueries({ queryKey: ["productos"] });
+                }}
+              >−</button>
+
+    <strong style={{ minWidth: 60, textAlign: "center" }}>Stock: {p.stock}</strong>
+
+    <button
+      onClick={async () => {
+        const nuevo = (p.stock ?? 0) + 1;
+        await api.patch(`/productos/${p.id}`, { stock: nuevo });
+        await qc.invalidateQueries({ queryKey: ["productos"] });
+      }}
+    >+</button>
+
+    <div style={{ flex: 1 }} />
+
+    <button
+      style={{ color: "#a00" }}
+      onClick={async () => {
+        if (!confirm(`¿Eliminar "${p.nombre}"?`)) return;
+        await api.delete(`/productos/${p.id}`);
+        await qc.invalidateQueries({ queryKey: ["productos"] });
+      }}
+    >
+      Eliminar
+    </button>
+  </div>
+</article>
+
+
         ))}
       </div>
     </main>
