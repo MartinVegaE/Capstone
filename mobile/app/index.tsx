@@ -1,99 +1,112 @@
-import { Stack } from "expo-router";
+import { Stack, Link } from "expo-router";
+import { View, Text, FlatList, ActivityIndicator, Switch, Pressable } from "react-native";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import SearchInput from "../src/components/SearchInput";
 import { api } from "../src/api";
-import { View, Text, FlatList, ActivityIndicator, Button } from "react-native";
 
-type Producto = { id: number; nombre: string; sku: string; stock: number };
+type Producto = { id: number; name: string; sku: string; stock: number };
+type ListResp = { items: Producto[]; page: number; pageSize: number; total: number };
 
 export default function Home() {
-  const apiUrl = (process.env.EXPO_PUBLIC_API_URL as string) || "(no .env)";
   const qc = useQueryClient();
+  const [q, setQ] = useState("");
+  const [soloBajoStock, setSoloBajoStock] = useState(false);
 
-  const q = useQuery({
-    queryKey: ["productos", apiUrl],
-    queryFn: async (): Promise<Producto[]> => (await api.get<Producto[]>("/productos")).data,
+  const query = useQuery({
+    queryKey: ["productos", q, soloBajoStock],
+    queryFn: async (): Promise<ListResp> => {
+      const params = new URLSearchParams();
+      if (q) params.set("q", q);
+      if (soloBajoStock) params.set("soloBajoStock", "true");
+      params.set("page", "1");
+      params.set("pageSize", "50");
+      const { data } = await api.get<ListResp>(`/productos?${params.toString()}`);
+      return data;
+    },
   });
 
   const adjustStock = useMutation({
-  // ✅ Ahora enviamos el stock final (absoluto), no el delta
-  mutationFn: async ({ id, newStock }: { id: number; newStock: number }) => {
-    await api.patch(`/productos/${id}`, { stock: Math.max(0, newStock) });
-    return { id, newStock: Math.max(0, newStock) };
-  },
-  onMutate: async ({ id, newStock }) => {
-    await qc.cancelQueries({ queryKey: ["productos", apiUrl] });
-    const prev = qc.getQueryData<Producto[]>(["productos", apiUrl]);
-
-    // ✅ Optimista: fijamos ese stock exacto
-    qc.setQueryData<Producto[]>(["productos", apiUrl], (old) =>
-      (old ?? []).map(p => p.id === id ? { ...p, stock: Math.max(0, newStock) } : p)
-    );
-
-    return { prev };
-  },
-  onError: (_err, _vars, ctx) => {
-    if (ctx?.prev) qc.setQueryData(["productos", apiUrl], ctx.prev); // rollback
-  },
-  onSettled: () => {
-    qc.invalidateQueries({ queryKey: ["productos", apiUrl] });
-  },
-});
-
-// ... dentro del renderItem:
-
-  if (q.isLoading) {
-    return (
-      <View style={{ flex: 1, padding: 16 }}>
-        <Stack.Screen options={{ title: "Productos" }} />
-        <ActivityIndicator />
-        <Text>API: {apiUrl}</Text>
-      </View>
-    );
-  }
-
-  if (q.error) {
-    const err = q.error as any;
-    return (
-      <View style={{ flex: 1, padding: 16 }}>
-        <Stack.Screen options={{ title: "Productos" }} />
-        <Text style={{ color: "crimson", marginBottom: 8 }}>Error al cargar</Text>
-        <Text>API: {apiUrl}</Text>
-        <Text style={{ marginTop: 8 }}>Mensaje: {String(err?.message || err)}</Text>
-        {err?.response?.status ? <Text>Status: {err.response.status}</Text> : null}
-        {err?.response?.data ? <Text>Cuerpo: {JSON.stringify(err.response.data)}</Text> : null}
-      </View>
-    );
-  }
+    mutationFn: async ({ id, newStock }: { id: number; newStock: number }) => {
+      await api.patch(`/productos/${id}/stock`, { set: Math.max(0, newStock) });
+      return { id, newStock: Math.max(0, newStock) };
+    },
+    onMutate: async (vars) => {
+      await qc.cancelQueries({ queryKey: ["productos", q, soloBajoStock] });
+      const prev = qc.getQueryData<ListResp>(["productos", q, soloBajoStock]);
+      if (prev) {
+        qc.setQueryData<ListResp>(["productos", q, soloBajoStock], {
+          ...prev,
+          items: prev.items.map((p) => (p.id === vars.id ? { ...p, stock: vars.newStock } : p)),
+        });
+      }
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["productos", q, soloBajoStock], ctx.prev);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["productos", q, soloBajoStock] });
+    },
+  });
 
   return (
-    <View style={{ flex: 1, padding: 16 }}>
-      <Stack.Screen options={{ title: "Productos" }} />
-      <Text>API: {apiUrl}</Text>
-
-      <FlatList
-        data={q.data ?? []}
-        keyExtractor={(p) => String(p.id)}
-        renderItem={({ item }) => (
-          <View style={{ padding: 12, borderWidth: 1, borderRadius: 12, marginBottom: 8 }}>
-            <Text style={{ fontWeight: "600" }}>{item.nombre}</Text>
-            <Text>SKU: {item.sku}</Text>
-            <Text style={{ marginVertical: 6 }}>Stock: {item.stock}</Text>
-
-            <View style={{ flexDirection: "row", gap: 8, justifyContent: "space-between" }}>
-              <Button
-                title="-"
-                onPress={() => adjustStock.mutate({ id: item.id, newStock: (item.stock ?? 0) - 1 })}
-                disabled={adjustStock.isPending}
-              />
-              <Button
-                title="+"
-                onPress={() => adjustStock.mutate({ id: item.id, newStock: (item.stock ?? 0) + 1 })}
-                disabled={adjustStock.isPending}
-              />
-            </View>
-          </View>
-        )}
+    <View style={{ flex: 1 }}>
+      <Stack.Screen
+        options={{
+          title: "Inventario",
+          headerRight: () => <Link href="/new" style={{ color: "#007aff", fontWeight: "600" }}>Nuevo</Link>,
+        }}
       />
+      <View style={{ padding: 12, gap: 8 }}>
+        <SearchInput onChange={setQ} />
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Text>Bajo stock</Text>
+          <Switch value={soloBajoStock} onValueChange={setSoloBajoStock} />
+        </View>
+      </View>
+
+      {query.isLoading && <ActivityIndicator style={{ marginTop: 12 }} />}
+      {query.isError && <Text style={{ padding: 12 }}>Error al cargar</Text>}
+
+      {query.data && (
+        <FlatList
+          contentContainerStyle={{ padding: 12, paddingBottom: 24 }}
+          data={query.data.items}
+          keyExtractor={(item) => String(item.id)}
+          ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
+          renderItem={({ item }) => (
+            <View
+              style={{
+                borderWidth: 1,
+                borderColor: "#eee",
+                borderRadius: 12,
+                padding: 12,
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <Link href={`/product/${item.id}`} asChild>
+                <Pressable style={{ flex: 1 }}>
+                  <Text style={{ fontWeight: "bold" }}>{item.name}</Text>
+                  <Text style={{ color: "#666" }}>SKU: {item.sku}</Text>
+                  <Text>Stock: {item.stock}</Text>
+                </Pressable>
+              </Link>
+
+              <View style={{ flexDirection: "row", gap: 12 }}>
+                <Pressable onPress={() => adjustStock.mutate({ id: item.id, newStock: item.stock - 1 })}>
+                  <Text style={{ fontSize: 24 }}>−</Text>
+                </Pressable>
+                <Pressable onPress={() => adjustStock.mutate({ id: item.id, newStock: item.stock + 1 })}>
+                  <Text style={{ fontSize: 24 }}>＋</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
+        />
+      )}
     </View>
   );
 }

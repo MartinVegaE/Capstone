@@ -19,3 +19,36 @@ model Producto {
   creadoEn      DateTime @default(now())
   actualizadoEn DateTime @updatedAt
 }
+
+enum MovementType {
+  IN
+  OUT
+  ADJUST
+  SET
+}
+
+model Product {
+  id         Int              @id @default(autoincrement())
+  name       String
+  sku        String           @unique
+  stock      Int              @default(0)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+  movements  StockMovement[]
+}
+
+model StockMovement {
+  id         Int          @id @default(autoincrement())
+  product    Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId  Int
+  type       MovementType
+  delta      Int          // cambio aplicado (puede ser negativo)
+  before     Int          // stock antes
+  after      Int          // stock después (clamp >= 0 si así lo manejas)
+  reason     String?
+  source     String?      // "web" | "mobile" | "api" | etc.
+  actor      String?      // si luego agregas usuarios, puedes migrar a actorId
+  createdAt  DateTime     @default(now())
+
+  @@index([productId, createdAt])
+}

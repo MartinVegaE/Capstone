@@ -2,6 +2,8 @@ import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient
 import { api } from "./api";
 import axios, { AxiosError } from "axios";
 import { useState } from "react";
+import ProductsList from "./pages/ProductsList";
+
 
 
 type Producto = { id: number; sku: string; nombre: string; stock: number };

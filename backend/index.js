@@ -9,7 +9,7 @@ const app = express();
 // CORS amplio (incluye PATCH/DELETE y preflight)
 app.use(cors({
   origin: true,
-  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS", "PUT"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
@@ -89,6 +89,48 @@ app.delete("/productos/:id", async (req, res) => {
     res.status(400).json({ error: String(e.message || e) });
   }
 });
+
+// OBTENER 1 PRODUCTO
+app.get("/productos/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "id inválido" });
+  const p = await prisma.producto.findUnique({ where: { id } });
+  if (!p) return res.status(404).json({ error: "no existe" });
+  res.json(p);
+});
+
+// EDITAR CAMPOS (nombre, sku, marca, etc.)
+app.put("/productos/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "id inválido" });
+
+  const b = req.body || {};
+  const data = {};
+
+  if (b.sku != null) data.sku = String(b.sku).trim();
+  if (b.nombre != null) data.nombre = String(b.nombre).trim();
+  if (b.marca != null) data.marca = b.marca?.trim() || null;
+  if (b.categoria != null) data.categoria = b.categoria?.trim() || null;
+  if (b.ubicacion != null) data.ubicacion = b.ubicacion?.trim() || null;
+  if (b.codigoBarras != null) data.codigoBarras = b.codigoBarras?.trim() || null;
+  if (b.stock != null) {
+    const s = Number(b.stock);
+    if (!Number.isFinite(s) || s < 0) return res.status(400).json({ error: "stock debe ser número >= 0" });
+    data.stock = s;
+  }
+
+  try {
+    const updated = await prisma.producto.update({ where: { id }, data });
+    res.json(updated);
+  } catch (e) {
+    if (e?.code === "P2002") {
+      const campo = e.meta?.target?.[0] || "campo único";
+      return res.status(409).json({ error: `Ya existe un producto con ese ${campo}` });
+    }
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, "0.0.0.0", () => {
