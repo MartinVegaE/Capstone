@@ -1,89 +1,160 @@
-import { createPortal } from 'react-dom';
-import { useQuery } from '@tanstack/react-query';
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { api } from '../api';
 
-type Movement = {
-  id:number; type:'IN'|'OUT'|'ADJUST'|'SET'; delta:number; before:number; after:number;
-  reason?:string|null; source?:string|null; actor?:string|null; createdAt:string;
-};
-type Resp = { items:Movement[]; page:number; pageSize:number; total:number };
+type MovementType = 'IN' | 'OUT' | 'ADJUST' | 'SET';
 
-export default function MovementsModal({ productId, onClose }: { productId:number; onClose:()=>void }) {
+type StockMovement = {
+  id: number;
+  productId: number;
+  type: MovementType;
+  delta: number;
+  before: number;
+  after: number;
+  reason?: string | null;
+  source?: string | null;
+  actor?: string | null;
+  createdAt: string; // ISO
+};
+
+type MovementsResp = {
+  items: StockMovement[];
+  page: number;
+  pageSize: number;
+  total: number;
+};
+
+export default function MovementsModal({
+  productId,
+  onClose,
+}: {
+  productId: number;
+  onClose: () => void;
+}) {
   const [page, setPage] = useState(1);
-  const pageSize = 20;
+  const pageSize = 10;
 
   const q = useQuery({
-    queryKey: ['movimientos', productId, page, pageSize],
-    queryFn: async (): Promise<Resp> => {
-      const params = new URLSearchParams({ page:String(page), pageSize:String(pageSize) });
-      const { data } = await api.get<Resp>(`/productos/${productId}/movimientos?${params.toString()}`);
+    queryKey: ['producto-movimientos', productId, page, pageSize],
+    queryFn: async (): Promise<MovementsResp> => {
+      const { data } = await api.get<MovementsResp>(
+        `/productos/${productId}/movimientos?page=${page}&pageSize=${pageSize}`
+      );
       return data;
-    }
+    },
+    // v5: reemplaza keepPreviousData: true
+    placeholderData: keepPreviousData,
   });
 
-  useEffect(()=> {
-    const onEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onEsc);
-    return () => window.removeEventListener('keydown', onEsc);
+  const totalPages = useMemo(
+    () => (q.data ? Math.max(1, Math.ceil(q.data.total / pageSize)) : 1),
+    [q.data, pageSize]
+  );
+
+  // Cerrar con ESC
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const totalPages = q.data ? Math.max(1, Math.ceil(q.data.total / pageSize)) : 1;
+  return (
+    <div
+      aria-modal
+      role="dialog"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)',
+        display: 'grid', placeItems: 'center', zIndex: 9999,
+      }}
+    >
+      <div
+        style={{
+          width: 'min(920px, 95vw)',
+          background: '#fff',
+          borderRadius: 12,
+          boxShadow: '0 20px 60px rgba(0,0,0,.25)',
+          overflow: 'hidden',
+        }}
+      >
+        <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 12, borderBottom: '1px solid #eee' }}>
+          <h3 style={{ margin: 0 }}>Historial de movimientos</h3>
+          <button onClick={onClose} aria-label="Cerrar">✕</button>
+        </header>
 
-  const content = (
-    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.4)', display:'grid', placeItems:'center', zIndex:9999 }}
-         onClick={onClose}>
-      <div style={{ background:'#fff', borderRadius:12, width:'min(900px,92vw)', maxHeight:'80vh', overflow:'auto', padding:16 }}
-           onClick={(e)=>e.stopPropagation()}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
-          <h3 style={{ margin:0 }}>Historial de stock</h3>
-          <button onClick={onClose}>✕</button>
-        </div>
+        <div style={{ padding: 12 }}>
+          {q.isLoading && <p>Cargando…</p>}
+          {q.isError && <p>Ocurrió un error al cargar el historial.</p>}
 
-        {q.isLoading && <p>Cargando…</p>}
-        {q.isError && <p>Error al cargar</p>}
+          {q.data && q.data.items.length === 0 && (
+            <p style={{ color: '#666' }}>Sin movimientos registrados.</p>
+          )}
 
-        {q.data && (
-          <>
-            <table style={{ width:'100%', borderCollapse:'collapse' }}>
-              <thead>
-                <tr style={{ textAlign:'left', borderBottom:'1px solid #eee' }}>
-                  <th style={{ padding:'8px 4px' }}>Fecha</th>
-                  <th style={{ padding:'8px 4px' }}>Tipo</th>
-                  <th style={{ padding:'8px 4px' }}>Δ</th>
-                  <th style={{ padding:'8px 4px' }}>Antes</th>
-                  <th style={{ padding:'8px 4px' }}>Después</th>
-                  <th style={{ padding:'8px 4px' }}>Motivo</th>
-                  <th style={{ padding:'8px 4px' }}>Fuente</th>
-                  <th style={{ padding:'8px 4px' }}>Actor</th>
-                </tr>
-              </thead>
-              <tbody>
-                {q.data.items.map(m=>(
-                  <tr key={m.id} style={{ borderBottom:'1px solid #f2f2f2' }}>
-                    <td style={{ padding:'8px 4px', whiteSpace:'nowrap' }}>{new Date(m.createdAt).toLocaleString()}</td>
-                    <td style={{ padding:'8px 4px' }}>{m.type}</td>
-                    <td style={{ padding:'8px 4px' }}>{m.delta > 0 ? `+${m.delta}` : m.delta}</td>
-                    <td style={{ padding:'8px 4px' }}>{m.before}</td>
-                    <td style={{ padding:'8px 4px' }}>{m.after}</td>
-                    <td style={{ padding:'8px 4px' }}>{m.reason ?? '—'}</td>
-                    <td style={{ padding:'8px 4px' }}>{m.source ?? '—'}</td>
-                    <td style={{ padding:'8px 4px' }}>{m.actor ?? '—'}</td>
+          {q.data && q.data.items.length > 0 && (
+            <div style={{ overflow: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr>
+                    <th style={th}>Fecha</th>
+                    <th style={th}>Tipo</th>
+                    <th style={th}>Δ</th>
+                    <th style={th}>Antes</th>
+                    <th style={th}>Después</th>
+                    <th style={th}>Motivo</th>
+                    <th style={th}>Origen</th>
+                    <th style={th}>Actor</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-
-            <div style={{ display:'flex', alignItems:'center', marginTop:12 }}>
-              <button onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={page<=1}>← Anterior</button>
-              <span style={{ padding:'0 8px' }}>Página {page} de {totalPages}</span>
-              <button onClick={()=>setPage(p=>Math.min(totalPages,p+1))} disabled={page>=totalPages}>Siguiente →</button>
+                </thead>
+                <tbody>
+                  {q.data.items.map((m) => (
+                    <tr key={m.id}>
+                      <td style={td}>{new Date(m.createdAt).toLocaleString()}</td>
+                      <td style={td}><Badge kind={m.type} /></td>
+                      <td style={td} title={`${m.delta}`}>
+                        <span style={{ fontWeight: 600, color: m.delta > 0 ? '#0a7f2e' : m.delta < 0 ? '#b01515' : '#555' }}>
+                          {m.delta > 0 ? `+${m.delta}` : m.delta}
+                        </span>
+                      </td>
+                      <td style={td}>{m.before}</td>
+                      <td style={td}>{m.after}</td>
+                      <td style={td}>{m.reason ?? '—'}</td>
+                      <td style={td}>{m.source ?? '—'}</td>
+                      <td style={td}>{m.actor ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          </>
-        )}
+          )}
+
+          <footer style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12, justifyContent: 'flex-end' }}>
+            <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>← Anterior</button>
+            <span>Página {page} de {totalPages}</span>
+            <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}>Siguiente →</button>
+          </footer>
+        </div>
       </div>
     </div>
   );
+}
 
-  return createPortal(content, document.body);
+const th: CSSProperties = { textAlign: 'left', fontWeight: 600, borderBottom: '1px solid #eee', padding: '8px 6px', whiteSpace: 'nowrap' };
+const td: CSSProperties = { borderBottom: '1px solid #f1f1f1', padding: '8px 6px', whiteSpace: 'nowrap' };
+
+function Badge({ kind }: { kind: MovementType }) {
+  const bg =
+    kind === 'IN' ? '#e8f6ee' :
+    kind === 'OUT' ? '#fdeceb' :
+    kind === 'ADJUST' ? '#eef4ff' :
+    '#f5f7fa';
+  const color =
+    kind === 'IN' ? '#0a7f2e' :
+    kind === 'OUT' ? '#b01515' :
+    kind === 'ADJUST' ? '#264cb3' :
+    '#444';
+  return (
+    <span style={{ background: bg, color, padding: '2px 8px', borderRadius: 999, fontSize: 12 }}>
+      {kind}
+    </span>
+  );
 }

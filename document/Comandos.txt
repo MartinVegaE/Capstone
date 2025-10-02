@@ -10,6 +10,9 @@ node index.js
 cd C:\Capstone\frontend
 npm run dev
 
+cd C:\Capstone\mobile
+ npx expo start --tunnel -c
+
 Hacer commit y push:
 cd C:\Capstone
 git init → Inicializa un repositorio Git en la carpeta actual.
