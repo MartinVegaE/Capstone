@@ -131,6 +131,208 @@ app.put("/productos/:id", async (req, res) => {
   }
 });
 
+/* =========================
+   Ingresos de stock + PPP
+   ========================= */
+
+// Helpers Decimal/fechas para SQLite
+function round(n, dec) {
+  const f = Math.pow(10, dec);
+  return Math.round(n * f) / f;
+}
+function decStr(n, dec) { return round(n, dec).toFixed(dec); } // enviar Decimals como string
+function parseDate(s) { return s ? new Date(s) : undefined; }
+function toNumber(d) { return d == null ? 0 : parseFloat(String(d)); }
+
+app.post("/ingresos", async (req, res) => {
+  const body = req.body || {};
+  if (!Array.isArray(body.items) || body.items.length === 0) {
+    return res.status(400).json({ error: "Debe incluir al menos un ítem de ingreso." });
+  }
+
+  try {
+    const created = await prisma.$transaction(async (tx) => {
+      // Cabecera del ingreso
+      const ingreso = await tx.ingreso.create({
+        data: {
+          fecha: parseDate(body.fecha),
+          proveedor: body.proveedor ?? null,
+          documento: body.documento ?? null,
+          observacion: body.observacion ?? null,
+        },
+      });
+
+      // Procesar cada ítem
+      for (const raw of body.items) {
+        const it = {
+          productoId: Number(raw?.productoId),
+          cantidad: Number(raw?.cantidad),
+          costoUnitario: Number(raw?.costoUnitario),
+          lote: raw?.lote ?? undefined,
+          venceAt: parseDate(raw?.venceAt),
+        };
+
+        if (!Number.isFinite(it.productoId) || it.productoId <= 0) {
+          throw new Error("Ítem inválido: productoId requerido y > 0.");
+        }
+        if (!Number.isFinite(it.cantidad) || it.cantidad <= 0) {
+          throw new Error("Ítem inválido: cantidad > 0 requerida.");
+        }
+        if (!Number.isFinite(it.costoUnitario) || it.costoUnitario < 0) {
+          throw new Error("Ítem inválido: costoUnitario >= 0 requerido.");
+        }
+
+        // Producto actual
+        const prod = await tx.producto.findUnique({
+          where: { id: it.productoId },
+          select: { id: true, stock: true, ppp: true },
+        });
+        if (!prod) throw new Error(`Producto ${it.productoId} no existe.`);
+
+        const stockActual = prod.stock ?? 0;
+        const pppActual = toNumber(prod.ppp);
+        const nuevoStock = stockActual + it.cantidad;
+
+        const nuevoPPP =
+          stockActual === 0
+            ? it.costoUnitario
+            : (stockActual * pppActual + it.cantidad * it.costoUnitario) / nuevoStock;
+
+        // Ítem del ingreso
+        await tx.ingresoItem.create({
+          data: {
+            ingresoId: ingreso.id,
+            productoId: it.productoId,
+            cantidad: it.cantidad,
+            costoUnitario: decStr(it.costoUnitario, 2), // Decimal como string
+            lote: it.lote,
+            venceAt: it.venceAt,
+          },
+        });
+
+        // Actualizar Producto (stock + PPP)
+        await tx.producto.update({
+          where: { id: prod.id },
+          data: {
+            stock: nuevoStock,
+            ppp: decStr(nuevoPPP, 2), // Decimal como string
+          },
+        });
+
+        // Movimiento de stock (trazabilidad, PPP a 4 decimales)
+        await tx.stockMovimiento.create({
+          data: {
+            productoId: prod.id,
+            tipo: "IN",                 // enum MovimientoTipo
+            cantidad: it.cantidad,
+            costoUnitario: decStr(it.costoUnitario, 2),
+            pppAntes: decStr(pppActual, 4),
+            pppDespues: decStr(nuevoPPP, 4),
+            refTipo: "INGRESO",         // enum RefTipo
+            refId: ingreso.id,
+          },
+        });
+      }
+
+      return ingreso;
+    });
+
+    res.status(201).json({ ok: true, ingresoId: created.id });
+  } catch (e) {
+    console.error("[POST /ingresos] Error:", e?.message || e);
+    res.status(400).json({ error: e?.message || String(e) });
+  }
+});
+
+/* =========================
+   Reportes CSV (PPP)
+   ========================= */
+
+// pequeño helper para CSV
+function csvEscape(s) {
+  const v = (s ?? '').toString();
+  return (v.includes('"') || v.includes(',') || v.includes('\n'))
+    ? `"${v.replace(/"/g, '""')}"`
+    : v;
+}
+
+// PPP vigente por producto (lo que está hoy en Producto)
+app.get('/reportes/ppp.csv', async (_req, res) => {
+  try {
+    const rows = await prisma.producto.findMany({
+      select: { id: true, sku: true, nombre: true, stock: true, ppp: true, actualizadoEn: true },
+      orderBy: { id: 'asc' },
+    });
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    const ts = new Date().toISOString().slice(0,16).replace(/[:T]/g,'-');
+    res.setHeader('Content-Disposition', `attachment; filename="ppp_${ts}.csv"`);
+
+    const header = 'id,sku,nombre,stock,ppp,actualizadoEn\n';
+    const body = rows.map(r => [
+      r.id,
+      csvEscape(r.sku ?? ''),
+      csvEscape(r.nombre ?? ''),
+      r.stock ?? 0,
+      (r.ppp == null ? '0.00' : Number.parseFloat(String(r.ppp)).toFixed(2)),
+      r.actualizadoEn?.toISOString?.() ?? ''
+    ].join(',')).join('\n');
+
+    res.send(header + body);
+  } catch (e) {
+    console.error('[GET /reportes/ppp.csv] Error:', e?.message || e);
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+// PPP histórico de compras (SUM(cantidad*costo)/SUM(cantidad) de todos los IngresoItem)
+app.get('/reportes/ppp_historico.csv', async (_req, res) => {
+  try {
+    const productos = await prisma.producto.findMany({
+      select: { id: true, sku: true, nombre: true },
+      orderBy: { id: 'asc' },
+    });
+
+    const items = await prisma.ingresoItem.findMany({
+      select: { productoId: true, cantidad: true, costoUnitario: true },
+    });
+
+    const agg = new Map(); // productoId -> { q, val }
+    for (const it of items) {
+      const pid = it.productoId;
+      const q = Number(it.cantidad) || 0;
+      const c = Number.parseFloat(String(it.costoUnitario)) || 0;
+      const cur = agg.get(pid) || { q: 0, val: 0 };
+      cur.q += q;
+      cur.val += q * c;
+      agg.set(pid, cur);
+    }
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    const ts = new Date().toISOString().slice(0,16).replace(/[:T]/g,'-');
+    res.setHeader('Content-Disposition', `attachment; filename="ppp_historico_${ts}.csv"`);
+
+    const header = 'id,sku,nombre,sum_cantidad,sum_valor,ppp_historico\n';
+    const body = productos.map(p => {
+      const a = agg.get(p.id) || { q: 0, val: 0 };
+      const pppHist = a.q > 0 ? (a.val / a.q) : 0;
+      return [
+        p.id,
+        csvEscape(p.sku ?? ''),
+        csvEscape(p.nombre ?? ''),
+        a.q,
+        a.val.toFixed(2),
+        pppHist.toFixed(4),
+      ].join(',');
+    }).join('\n');
+
+    res.send(header + body);
+  } catch (e) {
+    console.error('[GET /reportes/ppp_historico.csv] Error:', e?.message || e);
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, "0.0.0.0", () => {

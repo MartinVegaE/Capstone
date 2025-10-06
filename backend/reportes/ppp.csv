@@ -1,0 +1,39 @@
+/* =========================
+   Reporte PPP vigente (CSV)
+   ========================= */
+
+function csvEscape(s) {
+  const v = (s ?? '').toString();
+  return (v.includes('"') || v.includes(',') || v.includes('\n'))
+    ? `"${v.replace(/"/g, '""')}"`
+    : v;
+}
+
+app.get('/reportes/ppp.csv', async (_req, res) => {
+  try {
+    const rows = await prisma.producto.findMany({
+      select: { id: true, sku: true, nombre: true, stock: true, ppp: true, actualizadoEn: true },
+      orderBy: { id: 'asc' },
+    });
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    const ts = new Date().toISOString().slice(0,16).replace(/[:T]/g,'-');
+    res.setHeader('Content-Disposition', `attachment; filename="ppp_${ts}.csv"`);
+
+    const header = 'id,sku,nombre,stock,ppp,actualizadoEn\n';
+    const body = rows.map(r => [
+      r.id,
+      csvEscape(r.sku ?? ''),
+      csvEscape(r.nombre ?? ''),
+      r.stock ?? 0,
+      // aseguramos 2 decimales en el CSV
+      (r.ppp == null ? '0.00' : Number.parseFloat(String(r.ppp)).toFixed(2)),
+      r.actualizadoEn?.toISOString?.() ?? ''
+    ].join(',')).join('\n');
+
+    res.send(header + body);
+  } catch (e) {
+    console.error('[GET /reportes/ppp.csv] Error:', e?.message || e);
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});

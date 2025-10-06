@@ -7,6 +7,12 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/**
+ * =========================
+ * MODELOS EN ESPAÑOL (PPP)
+ * =========================
+ */
+
 model Producto {
   id            Int      @id @default(autoincrement())
   sku           String   @unique
@@ -18,7 +24,68 @@ model Producto {
   codigoBarras  String?  @unique
   creadoEn      DateTime @default(now())
   actualizadoEn DateTime @updatedAt
+  ppp           Decimal  @default(0) // Decimal sin @db.Numeric para SQLite
+
+  // Lados opuestos de relaciones
+  ingresoItems     IngresoItem[]
+  stockMovimientos StockMovimiento[]
 }
+
+model Ingreso {
+  id          Int      @id @default(autoincrement())
+  fecha       DateTime @default(now())
+  proveedor   String?
+  documento   String?
+  observacion String?
+
+  items IngresoItem[]
+}
+
+model IngresoItem {
+  id            Int       @id @default(autoincrement())
+  ingresoId     Int
+  productoId    Int
+  cantidad      Int
+  costoUnitario Decimal // sin @db.Numeric para SQLite
+  lote          String?
+  venceAt       DateTime?
+
+  ingreso  Ingreso  @relation(fields: [ingresoId], references: [id])
+  producto Producto @relation(fields: [productoId], references: [id])
+}
+
+model StockMovimiento {
+  id            Int            @id @default(autoincrement())
+  productoId    Int
+  tipo          MovimientoTipo
+  cantidad      Int
+  costoUnitario Decimal? // sin @db.Numeric
+  pppAntes      Decimal // sin @db.Numeric
+  pppDespues    Decimal // sin @db.Numeric
+  refTipo       RefTipo
+  refId         Int?
+  createdAt     DateTime       @default(now())
+
+  producto Producto @relation(fields: [productoId], references: [id])
+}
+
+enum MovimientoTipo {
+  IN
+  OUT
+  ADJUST
+}
+
+enum RefTipo {
+  INGRESO
+  VENTA
+  AJUSTE
+}
+
+/**
+ * ===================================
+ * MODELOS EN INGLÉS (ya los tenías)
+ * ===================================
+ */
 
 enum MovementType {
   IN
@@ -28,27 +95,27 @@ enum MovementType {
 }
 
 model Product {
-  id         Int              @id @default(autoincrement())
-  name       String
-  sku        String           @unique
-  stock      Int              @default(0)
-  createdAt  DateTime         @default(now())
-  updatedAt  DateTime         @updatedAt
-  movements  StockMovement[]
+  id        Int             @id @default(autoincrement())
+  name      String
+  sku       String          @unique
+  stock     Int             @default(0)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  movements StockMovement[]
 }
 
 model StockMovement {
-  id         Int          @id @default(autoincrement())
-  product    Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
-  productId  Int
-  type       MovementType
-  delta      Int          // cambio aplicado (puede ser negativo)
-  before     Int          // stock antes
-  after      Int          // stock después (clamp >= 0 si así lo manejas)
-  reason     String?
-  source     String?      // "web" | "mobile" | "api" | etc.
-  actor      String?      // si luego agregas usuarios, puedes migrar a actorId
-  createdAt  DateTime     @default(now())
+  id        Int          @id @default(autoincrement())
+  productId Int
+  product   Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  type      MovementType
+  delta     Int
+  before    Int
+  after     Int
+  reason    String?
+  source    String?
+  actor     String?
+  createdAt DateTime     @default(now())
 
   @@index([productId, createdAt])
 }

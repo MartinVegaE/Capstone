@@ -40,3 +40,17 @@
 .read-the-docs {
   color: #888;
 }
+:root{ --radius:10px }
+*{ box-sizing:border-box }
+body{
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Apple Color Emoji","Segoe UI Emoji";
+  color:#111; background:#fff; margin:0;
+}
+button{
+  border-radius: var(--radius);
+  transition: .15s transform ease, .15s filter ease;
+}
+button:active{ transform: translateY(1px); filter: brightness(.98); }
+input{
+  border-radius: var(--radius);
+}
