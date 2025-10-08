@@ -29,6 +29,7 @@ model Producto {
   // Lados opuestos de relaciones
   ingresoItems     IngresoItem[]
   stockMovimientos StockMovimiento[]
+  movProyectoItems MovimientoProyectoItem[]
 }
 
 model Ingreso {
@@ -79,11 +80,13 @@ enum RefTipo {
   INGRESO
   VENTA
   AJUSTE
+  PROYECTO_SALIDA
+  PROYECTO_RETORNO
 }
 
 /**
  * ===================================
- * MODELOS EN INGLÉS (ya los tenías)
+ * MODELOS EN INGLÉS
  * ===================================
  */
 
@@ -118,4 +121,30 @@ model StockMovement {
   createdAt DateTime     @default(now())
 
   @@index([productId, createdAt])
+}
+
+enum ProyectoMovTipo {
+  SALIDA
+  RETORNO
+}
+
+model MovimientoProyecto {
+  id          Int                      @id @default(autoincrement())
+  proyecto    String
+  tipo        ProyectoMovTipo
+  fecha       DateTime                 @default(now())
+  documento   String?
+  observacion String?
+  items       MovimientoProyectoItem[]
+}
+
+model MovimientoProyectoItem {
+  id            Int      @id @default(autoincrement())
+  movimientoId  Int
+  productoId    Int
+  cantidad      Int
+  costoUnitario Decimal?
+
+  movimiento MovimientoProyecto @relation(fields: [movimientoId], references: [id])
+  producto   Producto           @relation(fields: [productoId], references: [id])
 }

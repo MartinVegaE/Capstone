@@ -3,9 +3,12 @@ const express = require("express");
 const cors = require("cors");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
-
 const app = express();
 
+function round(n, dec) { const f = Math.pow(10, dec); return Math.round(n * f) / f; }
+function decStr(n, dec) { return round(n, dec).toFixed(dec); } // para Decimal como string
+function parseDate(s) { return s ? new Date(s) : undefined; }
+function toNumber(d) { return d == null ? 0 : parseFloat(String(d)); }
 // CORS amplio (incluye PATCH/DELETE y preflight)
 app.use(cors({
   origin: true,
@@ -332,7 +335,208 @@ app.get('/reportes/ppp_historico.csv', async (_req, res) => {
     res.status(500).json({ error: e?.message || String(e) });
   }
 });
+app.post('/proyectos/salidas', async (req, res) => {
+  const body = req.body || {};
+  if (!body.proyecto || typeof body.proyecto !== 'string') {
+    return res.status(400).json({ error: "Debe indicar 'proyecto' (string)." });
+  }
+  if (!Array.isArray(body.items) || body.items.length === 0) {
+    return res.status(400).json({ error: "Debe incluir al menos un ítem." });
+  }
 
+  try {
+    const created = await prisma.$transaction(async (tx) => {
+      const header = await tx.movimientoProyecto.create({
+        data: {
+          proyecto: body.proyecto.trim(),
+          tipo: 'SALIDA',
+          fecha: parseDate(body.fecha),
+          documento: body.documento ?? null,
+          observacion: body.observacion ?? null,
+        },
+      });
+
+      for (const raw of body.items) {
+        const cantidad = Number(raw?.cantidad);
+        if (!Number.isFinite(cantidad) || cantidad <= 0) {
+          throw new Error("Ítem inválido: cantidad > 0 requerida.");
+        }
+
+        // Buscar producto por id o sku
+        let prod = null;
+        if (raw?.productoId) {
+          prod = await tx.producto.findUnique({
+            where: { id: Number(raw.productoId) },
+            select: { id: true, sku: true, stock: true, ppp: true },
+          });
+        } else if (raw?.sku) {
+          prod = await tx.producto.findUnique({
+            where: { sku: String(raw.sku) },
+            select: { id: true, sku: true, stock: true, ppp: true },
+          });
+        } else {
+          throw new Error("Ítem inválido: debe incluir productoId o sku.");
+        }
+
+        if (!prod) throw new Error(`Producto no encontrado (${raw?.productoId ?? raw?.sku}).`);
+
+        const stockActual = prod.stock ?? 0;
+        if (stockActual < cantidad) {
+          throw new Error(`Stock insuficiente para ${prod.sku || prod.id}. Actual: ${stockActual}, requerido: ${cantidad}.`);
+        }
+
+        const pppActualNum = toNumber(prod.ppp);
+        const nuevoStock = stockActual - cantidad;
+
+        // Detalle del movimiento a proyecto (guardamos costo = PPP vigente)
+        await tx.movimientoProyectoItem.create({
+          data: {
+            movimientoId: header.id,
+            productoId: prod.id,
+            cantidad,
+            costoUnitario: decStr(pppActualNum, 2),
+          },
+        });
+
+        // Actualizar sólo el stock (PPP no cambia en salidas)
+        await tx.producto.update({
+          where: { id: prod.id },
+          data: { stock: nuevoStock },
+        });
+
+        // Trazabilidad en StockMovimiento
+        await tx.stockMovimiento.create({
+          data: {
+            productoId: prod.id,
+            tipo: 'OUT',
+            cantidad,
+            costoUnitario: decStr(pppActualNum, 2),
+            pppAntes: decStr(pppActualNum, 4),
+            pppDespues: decStr(pppActualNum, 4),
+            refTipo: 'PROYECTO_SALIDA',
+            refId: header.id,
+          },
+        });
+      }
+
+      return header;
+    });
+
+    res.status(201).json({ ok: true, movimientoId: created.id });
+  } catch (e) {
+    console.error('[POST /proyectos/salidas] Error:', e?.message || e);
+    res.status(400).json({ error: e?.message || String(e) });
+  }
+});
+
+app.post('/proyectos/retornos', async (req, res) => {
+  const body = req.body || {};
+  if (!body.proyecto || typeof body.proyecto !== 'string') {
+    return res.status(400).json({ error: "Debe indicar 'proyecto' (string)." });
+  }
+  if (!Array.isArray(body.items) || body.items.length === 0) {
+    return res.status(400).json({ error: "Debe incluir al menos un ítem." });
+  }
+
+  try {
+    const created = await prisma.$transaction(async (tx) => {
+      const header = await tx.movimientoProyecto.create({
+        data: {
+          proyecto: body.proyecto.trim(),
+          tipo: 'RETORNO',
+          fecha: parseDate(body.fecha),
+          documento: body.documento ?? null,
+          observacion: body.observacion ?? null,
+        },
+      });
+
+      for (const raw of body.items) {
+        const cantidad = Number(raw?.cantidad);
+        if (!Number.isFinite(cantidad) || cantidad <= 0) {
+          throw new Error("Ítem inválido: cantidad > 0 requerida.");
+        }
+
+        // Buscar producto por id o sku
+        let prod = null;
+        if (raw?.productoId) {
+          prod = await tx.producto.findUnique({
+            where: { id: Number(raw.productoId) },
+            select: { id: true, sku: true, stock: true, ppp: true },
+          });
+        } else if (raw?.sku) {
+          prod = await tx.producto.findUnique({
+            where: { sku: String(raw.sku) },
+            select: { id: true, sku: true, stock: true, ppp: true },
+          });
+        } else {
+          throw new Error("Ítem inválido: debe incluir productoId o sku.");
+        }
+
+        if (!prod) throw new Error(`Producto no encontrado (${raw?.productoId ?? raw?.sku}).`);
+
+        const stockActual = prod.stock ?? 0;
+        const pppActualNum = toNumber(prod.ppp);
+
+        // Intentar usar el costo de la última SALIDA a proyecto de este producto
+        const lastSalida = await tx.movimientoProyectoItem.findFirst({
+          where: { productoId: prod.id, movimiento: { tipo: 'SALIDA' } },
+          orderBy: { id: 'desc' },
+          select: { costoUnitario: true },
+        });
+
+        const costoRetNum = lastSalida
+          ? parseFloat(String(lastSalida.costoUnitario))
+          : pppActualNum;
+
+        const nuevoStock = stockActual + cantidad;
+        const nuevoPPP =
+          stockActual === 0
+            ? costoRetNum
+            : (stockActual * pppActualNum + cantidad * costoRetNum) / nuevoStock;
+
+        // Detalle del retorno
+        await tx.movimientoProyectoItem.create({
+          data: {
+            movimientoId: header.id,
+            productoId: prod.id,
+            cantidad,
+            costoUnitario: decStr(costoRetNum, 2),
+          },
+        });
+
+        // Actualizar stock y PPP
+        await tx.producto.update({
+          where: { id: prod.id },
+          data: {
+            stock: nuevoStock,
+            ppp: decStr(nuevoPPP, 2),
+          },
+        });
+
+        // Trazabilidad en StockMovimiento
+        await tx.stockMovimiento.create({
+          data: {
+            productoId: prod.id,
+            tipo: 'IN',
+            cantidad,
+            costoUnitario: decStr(costoRetNum, 2),
+            pppAntes: decStr(pppActualNum, 4),
+            pppDespues: decStr(nuevoPPP, 4),
+            refTipo: 'PROYECTO_RETORNO',
+            refId: header.id,
+          },
+        });
+      }
+
+      return header;
+    });
+
+    res.status(201).json({ ok: true, movimientoId: created.id });
+  } catch (e) {
+    console.error('[POST /proyectos/retornos] Error:', e?.message || e);
+    res.status(400).json({ error: e?.message || String(e) });
+  }
+});
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, "0.0.0.0", () => {
