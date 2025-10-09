@@ -538,6 +538,31 @@ app.post('/proyectos/retornos', async (req, res) => {
   }
 });
 
+// --- Lookup por SKU ---
+app.get("/productos/by-sku/:sku", async (req, res) => {
+  try {
+    const sku = String(req.params.sku);
+    const p = await prisma.producto.findUnique({ where: { sku } });
+    if (!p) return res.status(404).json({ error: "no existe" });
+    res.json(p);
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+// --- Lookup por código de barras ---
+app.get("/productos/by-codigo/:code", async (req, res) => {
+  try {
+    const code = String(req.params.code);
+    const p = await prisma.producto.findUnique({ where: { codigoBarras: code } });
+    if (!p) return res.status(404).json({ error: "no existe" });
+    res.json(p);
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`API on http://0.0.0.0:${PORT}`);

@@ -4,7 +4,7 @@ Git
 Docker Desktop
 
 Para correr las consolas:
-cd C:\Capstone\backend
+cd C:\Capstone\backend (Esto depende de donde tengan la carpeta de capstone)
 node index.js
 
 cd C:\Capstone\frontend
