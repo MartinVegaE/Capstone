@@ -1,12 +1,10 @@
 import { Stack } from "expo-router";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-const qc = new QueryClient();
-
-export default function Root() {
+export default function RootLayout() {
   return (
-    <QueryClientProvider client={qc}>
-      <Stack screenOptions={{ headerTitle: "Capstone (Móvil)" }} />
-    </QueryClientProvider>
+    <Stack screenOptions={{ headerTitleAlign: "center" }}>
+      <Stack.Screen name="index" options={{ title: "Bodega móvil" }} />
+      <Stack.Screen name="productos/index" options={{ title: "Productos" }} />
+    </Stack>
   );
 }
