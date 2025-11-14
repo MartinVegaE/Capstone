@@ -24,7 +24,7 @@ model Producto {
   codigoBarras  String?  @unique
   creadoEn      DateTime @default(now())
   actualizadoEn DateTime @updatedAt
-  ppp           Decimal  @default(0) // Decimal sin @db.Numeric para SQLite
+  ppp           Decimal  @default(0) // Decimal sin @db.* para SQLite
 
   // Lados opuestos de relaciones
   ingresoItems     IngresoItem[]
@@ -47,7 +47,7 @@ model IngresoItem {
   ingresoId     Int
   productoId    Int
   cantidad      Int
-  costoUnitario Decimal // sin @db.Numeric para SQLite
+  costoUnitario Decimal // sin @db.* para SQLite
   lote          String?
   venceAt       DateTime?
 
@@ -60,9 +60,9 @@ model StockMovimiento {
   productoId    Int
   tipo          MovimientoTipo
   cantidad      Int
-  costoUnitario Decimal? // sin @db.Numeric
-  pppAntes      Decimal // sin @db.Numeric
-  pppDespues    Decimal // sin @db.Numeric
+  costoUnitario Decimal? // sin @db.*
+  pppAntes      Decimal
+  pppDespues    Decimal
   refTipo       RefTipo
   refId         Int?
   createdAt     DateTime       @default(now())
@@ -98,13 +98,26 @@ enum MovementType {
 }
 
 model Product {
-  id        Int             @id @default(autoincrement())
-  name      String
-  sku       String          @unique
-  stock     Int             @default(0)
-  createdAt DateTime        @default(now())
-  updatedAt DateTime        @updatedAt
-  movements StockMovement[]
+  id               Int             @id @default(autoincrement())
+  sku              String          @unique
+  nombre           String          @map("name")
+  stock_m          Decimal         @default(0) @map("stock")
+  familia          String
+  subfamilia       String?
+  unidadMedidaBase String
+  stockMin         Int             @default(0)
+  ppp              Decimal         @default(0)
+  marca            String?
+  modelo           String?
+  norma            String?
+  codigoBarras     String?         @unique
+  activo           Boolean         @default(true)
+  descripcion      String?
+  specs            Json?
+  proveedorId      Int?
+  movements        StockMovement[]
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
 }
 
 model StockMovement {

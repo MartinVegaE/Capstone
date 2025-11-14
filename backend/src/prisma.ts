@@ -1,16 +1,20 @@
 // backend/src/prisma.ts
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from "@prisma/client";
 
-// Usamos globalThis para evitar depender de "global" (Node) y de los tipos de @types/node.
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+declare global {
+  // Evita crear múltiples instancias en desarrollo con hot-reload
+  // eslint-disable-next-line no-var
+  var prisma: PrismaClient | undefined;
+}
 
-export const prisma =
-  globalForPrisma.prisma ??
+const prisma =
+  global.prisma ??
   new PrismaClient({
-    log: ['warn', 'error'], // opcional: logs útiles sin contaminar la consola
+    log: process.env.NODE_ENV === "development" ? ["query", "error", "warn"] : ["error"],
   });
 
-// Siempre reasignamos para asegurar singleton en dev/hot-reload
-globalForPrisma.prisma = prisma;
+if (process.env.NODE_ENV !== "production") {
+  global.prisma = prisma;
+}
 
 export default prisma;
