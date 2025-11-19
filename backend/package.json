@@ -3,10 +3,19 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index,js",
     "test": "jest",
     "seed": "node seed.js"
   },
-  "keywords": ["backend", "api", "capstone", "express", "prisma"],
+  "keywords": [
+    "backend",
+    "api",
+    "capstone",
+    "express",
+    "prisma"
+  ],
   "author": "",
   "license": "ISC",
   "description": "Backend API for Capstone project",
@@ -20,6 +29,9 @@
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
-    "prisma": "^6.19.0"
+    "@types/node": "^24.10.1",
+    "prisma": "^6.19.0",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.9.3"
   }
 }

@@ -99,7 +99,8 @@ router.post("/", async (req, res) => {
         normalizedKind = upper as typeof normalizedKind;
       } else {
         return res.status(400).json({
-          message: "Tipo de producto inválido. Use CONSUMABLE, TOOL o FIXED_ASSET.",
+          message:
+            "Tipo de producto inválido. Use CONSUMABLE, TOOL o FIXED_ASSET.",
         });
       }
     }
@@ -168,7 +169,8 @@ router.put("/:id", async (req, res) => {
         normalizedKind = upper as typeof normalizedKind;
       } else {
         return res.status(400).json({
-          message: "Tipo de producto inválido. Use CONSUMABLE, TOOL o FIXED_ASSET.",
+          message:
+            "Tipo de producto inválido. Use CONSUMABLE, TOOL o FIXED_ASSET.",
         });
       }
     }

@@ -97,27 +97,26 @@ enum MovementType {
   SET
 }
 
+enum ProductKind {
+  CONSUMABLE
+  TOOL
+  FIXED_ASSET
+}
+
 model Product {
-  id               Int             @id @default(autoincrement())
-  sku              String          @unique
-  nombre           String          @map("name")
-  stock_m          Decimal         @default(0) @map("stock")
-  familia          String
-  subfamilia       String?
-  unidadMedidaBase String
-  stockMin         Int             @default(0)
-  ppp              Decimal         @default(0)
-  marca            String?
-  modelo           String?
-  norma            String?
-  codigoBarras     String?         @unique
-  activo           Boolean         @default(true)
-  descripcion      String?
-  specs            Json?
-  proveedorId      Int?
-  movements        StockMovement[]
-  createdAt        DateTime        @default(now())
-  updatedAt        DateTime        @updatedAt
+  id             Int             @id @default(autoincrement())
+  code           String          @unique
+  name           String
+  description    String?
+  unit           String
+  kind           ProductKind     @default(CONSUMABLE)
+  isActive       Boolean         @default(true)
+  minStock       Float?
+  maxStock       Float?
+  categoryId     Int?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  stockMovements StockMovement[]
 }
 
 model StockMovement {
@@ -160,4 +159,54 @@ model MovimientoProyectoItem {
 
   movimiento MovimientoProyecto @relation(fields: [movimientoId], references: [id])
   producto   Producto           @relation(fields: [productoId], references: [id])
+}
+
+// --- Enums de roles del sistema y tipo de trabajador ---
+
+enum UserRole {
+  ADMIN // administración de usuarios / configuración
+  WAREHOUSE // bodeguero
+  DRIVER // chofer / despachador
+  SUPERVISOR // opcional: jefes / supervisores
+}
+
+enum WorkerType {
+  MAESTRO
+  BODEGUERO
+  CHOFER
+  ADMINISTRATIVO
+  OTRO
+}
+
+// --- Trabajadores (personas reales) ---
+
+model Worker {
+  id        Int        @id @default(autoincrement())
+  fullName  String
+  rut       String     @unique
+  email     String? // correo de contacto (no necesariamente de login)
+  phone     String?
+  type      WorkerType @default(OTRO)
+  isActive  Boolean    @default(true)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  // Relación 1-1 opcional con User
+  user User?
+}
+
+// --- Usuarios del sistema (login) ---
+
+model User {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique // correo para login (bodeguero1@..., etc.)
+  passwordHash String
+  role         UserRole
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // vínculo opcional a Worker
+  workerId Int?    @unique
+  worker   Worker? @relation(fields: [workerId], references: [id])
 }
