@@ -64,6 +64,7 @@ app.get("/productos", async (_req, res) => {
 // CREAR (más tolerante con nombres de campos del front)
 app.post("/productos", async (req, res) => {
   const b = req.body || {};
+  console.log("[POST /productos] body:", b); // 👈 log del body
 
   // Aceptamos distintos aliases desde el front
   const skuRaw =
@@ -72,6 +73,7 @@ app.post("/productos", async (req, res) => {
     b.nombre ?? b.name ?? b.descripcion ?? b.description ?? b.titulo;
 
   if (!skuRaw || !nombreRaw) {
+    console.warn("[POST /productos] Falta sku o nombre");
     return res
       .status(400)
       .json({ error: "sku y nombre son obligatorios" });
@@ -81,6 +83,7 @@ app.post("/productos", async (req, res) => {
   const stock = Number(stockRaw);
 
   if (!Number.isFinite(stock) || stock < 0) {
+    console.warn("[POST /productos] Stock inválido:", stockRaw);
     return res
       .status(400)
       .json({ error: "stock debe ser número >= 0" });
@@ -102,19 +105,28 @@ app.post("/productos", async (req, res) => {
     stock,
   };
 
+  console.log("[POST /productos] data a crear:", data);
+
   try {
     const creado = await prisma.producto.create({ data });
+    console.log("[POST /productos] creado:", creado);
     res.status(201).json(creado);
   } catch (e) {
+    console.error("[POST /productos] Error Prisma:", e);
+
     if (e?.code === "P2002") {
       const campo = e.meta?.target?.[0] || "campo único";
       return res
         .status(409)
         .json({ error: `Ya existe un producto con ese ${campo}` });
     }
-    res.status(400).json({ error: String(e.message || e) });
+
+    res
+      .status(400)
+      .json({ error: e?.message || String(e) || "Error creando producto" });
   }
 });
+
 
 // ACTUALIZAR SOLO STOCK
 app.patch("/productos/:id", async (req, res) => {
@@ -211,14 +223,41 @@ app.post("/movimientos", async (req, res) => {
   res.status(201).json({ ok: true });
 });
 
-// LISTAR movimientos de stock (IN/OUT) con filtros básicos
+
+function apiToDbMovementType(apiTipo) {
+  switch (apiTipo) {
+    case "Ingreso":
+      return "IN";
+    case "Salida":
+      return "OUT";
+    case "Ajuste":
+      return "ADJUST";
+    default:
+      return undefined;
+  }
+}
+
+function dbToApiMovementType(dbTipo) {
+  switch (dbTipo) {
+    case "IN":
+      return "Ingreso";
+    case "OUT":
+      return "Salida";
+    case "ADJUST":
+      return "Ajuste";
+    default:
+      return "Ajuste";
+  }
+}
+// LISTAR movimientos de stock con filtros básicos
 app.get("/movimientos", async (req, res) => {
   try {
     const {
       q = "",
-      tipo,
+      tipo = "",
       page = "1",
       pageSize = "10",
+      // sortBy, sortDir llegan desde el front pero por ahora los ignoramos
     } = req.query;
 
     const pageNumber = Math.max(parseInt(page, 10) || 1, 1);
@@ -227,14 +266,15 @@ app.get("/movimientos", async (req, res) => {
 
     const where = {};
 
-    if (
-      typeof tipo === "string" &&
-      tipo.trim() !== "" &&
-      tipo !== "ALL"
-    ) {
-      where.tipo = tipo; // enum MovimientoTipo en tu schema
+    // Filtro por tipo ("Ingreso"/"Salida"/"Ajuste" -> "IN"/"OUT"/"ADJUST")
+    if (typeof tipo === "string" && tipo.trim() !== "" && tipo !== "ALL") {
+      const tipoDb = apiToDbMovementType(tipo.trim());
+      if (tipoDb) {
+        where.tipo = tipoDb;
+      }
     }
 
+    // Búsqueda por SKU o nombre de producto
     if (typeof q === "string" && q.trim() !== "") {
       const query = q.trim();
       where.OR = [
@@ -251,28 +291,47 @@ app.get("/movimientos", async (req, res) => {
       ];
     }
 
-    const movimientos = await prisma.stockMovimiento.findMany({
-      where,
-      orderBy: { id: "desc" },
-      skip,
-      take: sizeNumber,
-      include: {
-        producto: true,
-      },
-    });
+    const [rows, total] = await Promise.all([
+      prisma.stockMovimiento.findMany({
+        where,
+        orderBy: { id: "desc" },
+        skip,
+        take: sizeNumber,
+        include: {
+          producto: {
+            select: { sku: true },
+          },
+        },
+      }),
+      prisma.stockMovimiento.count({ where }),
+    ]);
 
-    res.json(movimientos);
+    // Adaptar al shape que espera MovementsPage
+    const data = rows.map((m) => ({
+      id: m.id,
+      fecha: m.createdAt.toISOString(),
+      tipo: dbToApiMovementType(m.tipo),
+      sku: m.producto?.sku ?? "",
+      cantidad: m.cantidad,
+      // Por ahora no tienes bodega/motivo/referencia en este modelo,
+      // así que rellenamos con algo razonable
+      bodega: null,
+      motivo: m.refTipo ?? null,
+      referencia: m.refId != null ? String(m.refId) : "",
+    }));
+
+    res.json({ data, total });
   } catch (e) {
     console.error("[GET /movimientos] Error:", e);
     res.status(500).json({ error: e?.message || String(e) });
   }
 });
-
 /* =========================
    Ingresos (lectura + alta)
    ========================= */
 
 // LISTAR cabeceras de ingresos
+// LISTAR cabeceras de ingresos + items, con paginación básica
 app.get("/ingresos", async (req, res) => {
   try {
     const { q = "", page = "1", pageSize = "10" } = req.query;
@@ -292,19 +351,89 @@ app.get("/ingresos", async (req, res) => {
       ];
     }
 
-    const ingresos = await prisma.ingreso.findMany({
-      where,
-      orderBy: { id: "desc" },
-      skip,
-      take: sizeNumber,
-    });
+    // Traemos ingresos + items + producto (para poder sacar el SKU)
+    const [ingresos, total] = await Promise.all([
+      prisma.ingreso.findMany({
+        where,
+        orderBy: { id: "desc" },
+        skip,
+        take: sizeNumber,
+        include: {
+          items: {
+            include: {
+              producto: {
+                select: { sku: true },
+              },
+            },
+          },
+        },
+      }),
+      prisma.ingreso.count({ where }),
+    ]);
 
-    res.json(ingresos);
+    // Adaptamos al shape que espera el frontend
+    const data = ingresos.map((ing) => ({
+      id: ing.id,
+      proveedor: ing.proveedor ?? "",
+      documento: ing.documento ?? "",
+      observacion: ing.observacion ?? "",
+      fecha: ing.fecha.toISOString(),
+      // Tu modelo no tiene "estado", así que lo fijamos por ahora
+      estado: "Confirmado",
+      items: ing.items.map((it) => ({
+        sku: it.producto?.sku ?? "",
+        cantidad: it.cantidad,
+        costo:
+          it.costoUnitario != null
+            ? Number.parseFloat(String(it.costoUnitario))
+            : undefined,
+      })),
+    }));
+
+    res.json({ data, total });
   } catch (e) {
     console.error("[GET /ingresos] Error:", e);
     res.status(500).json({ error: e?.message || String(e) });
   }
 });
+
+// EDITAR cabecera de un ingreso (no modifica stock/PPP todavía)
+app.put("/ingresos/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    return res.status(400).json({ error: "id inválido." });
+  }
+
+  const b = req.body || {};
+  console.log("[PUT /ingresos/:id] body:", b);
+
+  const data = {};
+
+  if (b.proveedor !== undefined) {
+    data.proveedor = b.proveedor ? String(b.proveedor).trim() : null;
+  }
+  if (b.documento !== undefined) {
+    data.documento = b.documento ? String(b.documento).trim() : null;
+  }
+  if (b.observacion !== undefined) {
+    data.observacion = b.observacion ? String(b.observacion).trim() : null;
+  }
+  if (b.fecha !== undefined) {
+    data.fecha = parseDate(b.fecha);
+  }
+
+  try {
+    const updated = await prisma.ingreso.update({
+      where: { id },
+      data,
+    });
+    res.json(updated);
+  } catch (e) {
+    console.error("[PUT /ingresos/:id] Error:", e);
+    res.status(400).json({ error: e?.message || String(e) });
+  }
+});
+
 
 /* =========================
    Ingresos de stock + PPP
@@ -312,13 +441,17 @@ app.get("/ingresos", async (req, res) => {
 
 app.post("/ingresos", async (req, res) => {
   const body = req.body || {};
+  console.log("[POST /ingresos] body:", JSON.stringify(body, null, 2));
+
   const items = Array.isArray(body.items) ? body.items : [];
 
   if (!Array.isArray(items) || items.length === 0) {
+    console.warn("[POST /ingresos] Sin items en la request.");
     return res
       .status(400)
       .json({ error: "Debe incluir al menos un ítem de ingreso." });
   }
+
 
   try {
     const created = await prisma.$transaction(async (tx) => {
@@ -841,6 +974,224 @@ app.get("/productos/by-codigo/:code", async (req, res) => {
     res.status(400).json({ error: String(e.message || e) });
   }
 });
+
+/* =========================
+   Catálogos simples
+   ========================= */
+
+/* =========================
+   Catálogos simples
+   ========================= */
+
+function getNombreFromBody(body) {
+  const raw =
+    body?.nombre ??
+    body?.name ??
+    body?.label ??
+    body?.titulo ??
+    null;
+
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
+async function createSimpleNombreRoutes(path, model) {
+  // LISTAR
+  app.get(`/${path}`, async (_req, res) => {
+    try {
+      const rows = await model.findMany({
+        orderBy: { nombre: "asc" },
+      });
+      res.json(rows);
+    } catch (e) {
+      console.error(`[GET /${path}] Error:`, e);
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  // CREAR
+  app.post(`/${path}`, async (req, res) => {
+    try {
+      console.log(`[POST /${path}] body:`, req.body);
+
+      const nombre = getNombreFromBody(req.body);
+      if (!nombre) {
+        return res
+          .status(400)
+          .json({ error: "El nombre es obligatorio." });
+      }
+
+      const created = await model.create({
+        data: { nombre },
+      });
+
+      res.status(201).json(created);
+    } catch (e) {
+      if (e?.code === "P2002") {
+        const campo = e.meta?.target?.[0] || "campo único";
+        return res
+          .status(409)
+          .json({ error: `Ya existe un registro con ese ${campo}.` });
+      }
+      console.error(`[POST /${path}] Error:`, e);
+      res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
+
+  // EDITAR
+  app.put(`/${path}/:id`, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({ error: "id inválido" });
+      }
+
+      console.log(`[PUT /${path}/${id}] body:`, req.body);
+
+      const nombre = getNombreFromBody(req.body);
+      if (!nombre) {
+        return res
+          .status(400)
+          .json({ error: "El nombre es obligatorio." });
+      }
+
+      const updated = await model.update({
+        where: { id },
+        data: { nombre },
+      });
+
+      res.json(updated);
+    } catch (e) {
+      if (e?.code === "P2002") {
+        const campo = e.meta?.target?.[0] || "campo único";
+        return res
+          .status(409)
+          .json({ error: `Ya existe un registro con ese ${campo}.` });
+      }
+      console.error(`[PUT /${path}/:id] Error:`, e);
+      res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
+
+  // ELIMINAR
+  app.delete(`/${path}/:id`, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({ error: "id inválido" });
+      }
+
+      await model.delete({ where: { id } });
+      res.status(204).send();
+    } catch (e) {
+      console.error(`[DELETE /${path}/:id] Error:`, e);
+      res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
+}
+
+// Categorías, Marcas y Proyectos (sólo nombre)
+createSimpleNombreRoutes("categorias", prisma.categoria);
+createSimpleNombreRoutes("marcas", prisma.marca);
+createSimpleNombreRoutes("proyectos", prisma.proyecto);
+
+// Bodegas (nombre + código opcional)
+// Bodegas (nombre + código opcional)
+app.get("/bodegas", async (_req, res) => {
+  try {
+    const rows = await prisma.bodega.findMany({
+      orderBy: { nombre: "asc" },
+    });
+    res.json(rows);
+  } catch (e) {
+    console.error("[GET /bodegas] Error:", e);
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+app.post("/bodegas", async (req, res) => {
+  try {
+    console.log("[POST /bodegas] body:", req.body);
+
+    const rawNombre = req.body?.nombre ?? req.body?.name ?? null;
+    const nombre =
+      typeof rawNombre === "string" ? rawNombre.trim() : "";
+
+    const rawCodigo =
+      req.body?.codigo ??
+      req.body?.code ??
+      req.body?.codigoBodega ??
+      null;
+    const codigo =
+      rawCodigo != null && String(rawCodigo).trim() !== ""
+        ? String(rawCodigo).trim()
+        : null;
+
+    if (!nombre) {
+      return res.status(400).json({ error: "El nombre es obligatorio." });
+    }
+
+    const created = await prisma.bodega.create({
+      data: { nombre, codigo },
+    });
+
+    res.status(201).json(created);
+  } catch (e) {
+    if (e?.code === "P2002") {
+      const campo = e.meta?.target?.[0] || "campo único";
+      return res
+        .status(409)
+        .json({ error: `Ya existe una bodega con ese ${campo}.` });
+    }
+    console.error("[POST /bodegas] Error:", e);
+    res.status(400).json({ error: e?.message || String(e) });
+  }
+});
+
+app.put("/bodegas/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) {
+      return res.status(400).json({ error: "id inválido" });
+    }
+
+    console.log(`[PUT /bodegas/${id}] body:`, req.body);
+
+    const rawNombre = req.body?.nombre ?? req.body?.name ?? null;
+    const nombre =
+      typeof rawNombre === "string" ? rawNombre.trim() : "";
+
+    const rawCodigo =
+      req.body?.codigo ??
+      req.body?.code ??
+      req.body?.codigoBodega ??
+      null;
+    const codigo =
+      rawCodigo != null && String(rawCodigo).trim() !== ""
+        ? String(rawCodigo).trim()
+        : null;
+
+    if (!nombre) {
+      return res.status(400).json({ error: "El nombre es obligatorio." });
+    }
+
+    const updated = await prisma.bodega.update({
+      where: { id },
+      data: { nombre, codigo },
+    });
+
+    res.json(updated);
+  } catch (e) {
+    if (e?.code === "P2002") {
+      const campo = e.meta?.target?.[0] || "campo único";
+      return res
+        .status(409)
+        .json({ error: `Ya existe una bodega con ese ${campo}.` });
+    }
+    console.error("[PUT /bodegas/:id] Error:", e);
+    res.status(400).json({ error: e?.message || String(e) });
+  }
+});
+
 
 /* =========================
    Server start

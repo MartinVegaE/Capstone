@@ -8,19 +8,8 @@ import ProductsPage from "./pages/Products";
 import MovementsPage from "./pages/Movements";
 import IngresosPage from "./pages/Ingresos";
 import LoginPage from "./pages/Login";
+import DashboardPage from "./pages/Dashboard";
 import { useAuth } from "./app/AuthContext";
-
-// Dashboard placeholder (puedes mejorarlo luego)
-function Dashboard() {
-  return (
-    <div className="mx-auto max-w-7xl p-6">
-      <h1 className="text-2xl font-semibold">Panel principal</h1>
-      <p className="mt-2 text-slate-600">
-        Bienvenido. Usa el menú de la izquierda para navegar.
-      </p>
-    </div>
-  );
-}
 
 // 404
 function NotFound() {
@@ -47,19 +36,27 @@ export default function App() {
   return (
     <BrowserRouter>
       {user ? (
-        // 💡 Usuario autenticado: mostramos el panel completo
+        // ✅ Usuario autenticado: panel dentro del AppShell
         <AppShell>
           <Routes>
-            <Route path="/" element={<Dashboard />} />
+            {/* Panel principal */}
+            <Route path="/" element={<DashboardPage />} />
+
+            {/* Inventario */}
             <Route path="/productos" element={<ProductsPage />} />
             <Route path="/movimientos" element={<MovementsPage />} />
             <Route path="/ingresos" element={<IngresosPage />} />
+
+            {/* Si un usuario logueado intenta ir a /login, lo mandamos al panel */}
+            <Route path="/login" element={<Navigate to="/" replace />} />
+
+            {/* 404 */}
             <Route path="/404" element={<NotFound />} />
             <Route path="*" element={<Navigate to="/404" replace />} />
           </Routes>
         </AppShell>
       ) : (
-        // 🚪 Sin usuario: solo se puede ver el login
+        // 🚪 Sin usuario: sólo existe /login
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           {/* Cualquier otra ruta redirige a /login */}

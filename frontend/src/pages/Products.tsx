@@ -1,384 +1,463 @@
 // src/pages/Products.tsx
-import { useState } from "react";
+import React, { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import {
   useQuery,
   useMutation,
   useQueryClient,
 } from "@tanstack/react-query";
-import { httpGet, httpPost } from "../lib/http";
+import ControlPanel, {
+  type ViewMode,
+} from "../components/layout/ControlPanel";
+import Button from "../components/ui/Button";
 
-// Tipo que viene del backend
-export interface Producto {
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
+
+/* ============
+   Tipos básicos
+   ============ */
+
+type Producto = {
   id: number;
   sku: string;
   nombre: string;
-  marca?: string | null;
-  categoria?: string | null;
-  ubicacion?: string | null;
-  codigoBarras?: string | null;
+  marca: string | null;
+  categoria: string | null;
   stock: number;
-}
+  ubicacion: string | null;
+  codigoBarras: string | null;
+};
 
-// Payload que enviamos al backend al crear
-interface CreateProductoBody {
-  sku: string;
+type CatalogoSimple = {
+  id: number;
   nombre: string;
-  marca?: string | null;
-  categoria?: string | null;
-  ubicacion?: string | null;
-  codigoBarras?: string | null;
-  stock: number;
-}
+};
 
-// Para el formulario (todo como string)
-interface CreateProductoFormState {
-  sku: string;
+type Bodega = {
+  id: number;
   nombre: string;
-  marca: string;
-  categoria: string;
-  ubicacion: string;
-  codigoBarras: string;
-  stock: string;
+  codigo: string | null;
+};
+
+/* =====================
+   Helpers de HTTP / API
+   ===================== */
+
+async function getJson<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`);
+  if (!res.ok) {
+    throw new Error(`Error HTTP ${res.status}`);
+  }
+  return res.json() as Promise<T>;
 }
 
-async function fetchProductos(): Promise<Producto[]> {
-  return httpGet<Producto[]>("/productos");
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    let msg = `Error HTTP ${res.status}`;
+    try {
+      const data = (await res.json()) as any;
+      if (data?.error) msg = data.error;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+  return res.json() as Promise<T>;
 }
+
+async function deleteApi(path: string): Promise<void> {
+  const res = await fetch(`${API_URL}${path}`, { method: "DELETE" });
+  if (!res.ok && res.status !== 204) {
+    let msg = `Error HTTP ${res.status}`;
+    try {
+      const data = (await res.json()) as any;
+      if (data?.error) msg = data.error;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+}
+
+/* ==========================
+   Página de gestión de stock
+   ========================== */
 
 export default function ProductsPage() {
-  const queryClient = useQueryClient();
+  const [q, setQ] = useState("");
+  const [view, setView] = useState<ViewMode>("list");
 
-  const {
-    data: productos,
-    isLoading,
-    error,
-  } = useQuery<Producto[]>({
-    queryKey: ["productos"],
-    queryFn: fetchProductos,
-  });
-
-  const [isFormOpen, setIsFormOpen] = useState(false);
-  const [form, setForm] = useState<CreateProductoFormState>({
-    sku: "",
-    nombre: "",
-    marca: "",
-    categoria: "",
-    ubicacion: "",
-    codigoBarras: "",
-    stock: "",
-  });
+  // Estado del formulario "nuevo producto"
+  const [sku, setSku] = useState("");
+  const [nombre, setNombre] = useState("");
+  const [codigoBarras, setCodigoBarras] = useState("");
+  const [categoriaNombre, setCategoriaNombre] = useState("");
+  const [marcaNombre, setMarcaNombre] = useState("");
+  const [bodegaNombre, setBodegaNombre] = useState("");
+  const [stockInicial, setStockInicial] = useState<number>(0);
   const [formError, setFormError] = useState<string | null>(null);
 
-  const createMutation = useMutation<
-    Producto,
-    unknown,
-    CreateProductoBody
-  >({
-    mutationFn: (body) =>
-      httpPost<Producto, CreateProductoBody>("/productos", body),
+  const queryClient = useQueryClient();
+
+  /* =========
+     Queries
+     ========= */
+
+  // Productos
+  const {
+    data: productos,
+    isLoading: productosLoading,
+    isError: productosError,
+    refetch: refetchProductos,
+  } = useQuery<Producto[]>({
+    queryKey: ["productos"],
+    queryFn: () => getJson<Producto[]>("/productos"),
+  });
+
+  // Catálogos
+  const { data: categorias } = useQuery<CatalogoSimple[]>({
+    queryKey: ["categorias"],
+    queryFn: () => getJson<CatalogoSimple[]>("/categorias"),
+  });
+
+  const { data: marcas } = useQuery<CatalogoSimple[]>({
+    queryKey: ["marcas"],
+    queryFn: () => getJson<CatalogoSimple[]>("/marcas"),
+  });
+
+  const { data: bodegas } = useQuery<Bodega[]>({
+    queryKey: ["bodegas"],
+    queryFn: () => getJson<Bodega[]>("/bodegas"),
+  });
+
+  const filteredProductos = useMemo(() => {
+    const list = productos ?? [];
+    const term = q.trim().toLowerCase();
+    if (!term) return list;
+
+    return list.filter((p) => {
+      return (
+        p.sku.toLowerCase().includes(term) ||
+        p.nombre.toLowerCase().includes(term) ||
+        (p.categoria ?? "").toLowerCase().includes(term) ||
+        (p.marca ?? "").toLowerCase().includes(term)
+      );
+    });
+  }, [productos, q]);
+
+  /* ===========
+     Mutations
+     =========== */
+
+  const createMut = useMutation({
+    mutationFn: (body: {
+      sku: string;
+      nombre: string;
+      codigoBarras: string;
+      categoria?: string | null;
+      marca?: string | null;
+      ubicacion?: string | null;
+      stockInicial?: number;
+    }) => postJson<Producto>("/productos", body),
     onSuccess: () => {
-      setForm({
-        sku: "",
-        nombre: "",
-        marca: "",
-        categoria: "",
-        ubicacion: "",
-        codigoBarras: "",
-        stock: "",
-      });
-      setFormError(null);
-      setIsFormOpen(false);
       queryClient.invalidateQueries({ queryKey: ["productos"] });
+      // limpiar formulario
+      setSku("");
+      setNombre("");
+      setCodigoBarras("");
+      setCategoriaNombre("");
+      setMarcaNombre("");
+      setBodegaNombre("");
+      setStockInicial(0);
+      setFormError(null);
     },
     onError: (err: any) => {
-      const msg =
-        err?.response?.data?.error ||
-        err?.message ||
-        "No se pudo crear el producto.";
-      setFormError(msg);
+      setFormError(err?.message ?? "No se pudo crear el producto.");
     },
   });
 
-  function handleChange(
-    field: keyof CreateProductoFormState,
-    value: string
-  ) {
-    setForm((prev) => ({ ...prev, [field]: value }));
-  }
+  const deleteMut = useMutation({
+    mutationFn: (id: number) => deleteApi(`/productos/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["productos"] });
+    },
+  });
 
-  function handleSubmit(e: FormEvent) {
+  /* ===========
+     Handlers
+     =========== */
+
+  function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setFormError(null);
 
-    const sku = form.sku.trim();
-    const nombre = form.nombre.trim();
-
-    if (!sku || !nombre) {
-      setFormError("SKU y nombre son obligatorios.");
+    if (!sku.trim() || !nombre.trim() || !codigoBarras.trim()) {
+      setFormError("SKU, Nombre y Código de barras son obligatorios.");
       return;
     }
 
-    const stockNumber =
-      form.stock.trim() === "" ? 0 : Number(form.stock.trim());
-
-    if (!Number.isFinite(stockNumber) || stockNumber < 0) {
-      setFormError(
-        "El stock debe ser un número mayor o igual a 0."
-      );
-      return;
-    }
-
-    const body: CreateProductoBody = {
-      sku,
-      nombre,
-      marca: form.marca.trim() || null,
-      categoria: form.categoria.trim() || null,
-      ubicacion: form.ubicacion.trim() || null,
-      codigoBarras: form.codigoBarras.trim() || null,
-      stock: stockNumber,
+    const body = {
+      sku: sku.trim(),
+      nombre: nombre.trim(),
+      codigoBarras: codigoBarras.trim(),
+      categoria: categoriaNombre || null,
+      marca: marcaNombre || null,
+      ubicacion: bodegaNombre || null,
+      stockInicial: Number.isFinite(stockInicial) ? stockInicial : 0,
     };
 
-    createMutation.mutate(body);
+    createMut.mutate(body);
   }
 
-  return (
-    <div className="mx-auto max-w-7xl p-6">
-      {/* Header de la página */}
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-slate-900">
-            Productos
-          </h1>
-          <p className="mt-1 text-sm text-slate-600">
-            Listado de productos registrados en el inventario.
-          </p>
-        </div>
+  function handleDelete(p: Producto) {
+    if (!window.confirm(`¿Eliminar el producto "${p.nombre}" (${p.sku})?`)) {
+      return;
+    }
+    deleteMut.mutate(p.id);
+  }
 
-        <button
-          type="button"
-          onClick={() => setIsFormOpen((open) => !open)}
-          className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-        >
-          {isFormOpen ? "Cerrar formulario" : "+ Nuevo producto"}
-        </button>
+  /* ========
+     Render
+     ======== */
+
+  return (
+    <section className="w-full px-6 pb-6">
+      <header className="mb-4">
+        <h1 className="text-2xl font-semibold text-slate-900">
+          Gestión de productos
+        </h1>
+        <p className="mt-1 text-sm text-slate-600">
+          Crea y administra los productos que luego usarás en ingresos,
+          movimientos y proyectos.
+        </p>
+      </header>
+
+      <ControlPanel
+        search={q}
+        onSearch={(v) => setQ(v)}
+        view={view}
+        onChangeView={setView}
+      />
+
+      {/* Bloque de creación */}
+      <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <h2 className="text-base font-semibold text-slate-900">
+          Crear nuevo producto
+        </h2>
+        <p className="mt-1 text-xs text-slate-500">
+          Los campos <strong>SKU</strong>, <strong>Nombre</strong> y{" "}
+          <strong>Código de barras</strong> son obligatorios.
+        </p>
+
+        {formError && (
+          <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {formError}
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="mt-4 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-sm text-slate-600">
+                SKU *
+              </label>
+              <input
+                value={sku}
+                onChange={(e) => setSku(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm font-mono"
+                placeholder="EXT-001"
+                required
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-slate-600">
+                Nombre *
+              </label>
+              <input
+                value={nombre}
+                onChange={(e) => setNombre(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
+                placeholder="Extintor PQS 6kg"
+                required
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-slate-600">
+                Código de barras *
+              </label>
+              <input
+                value={codigoBarras}
+                onChange={(e) => setCodigoBarras(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm font-mono"
+                placeholder="Escanea o escribe el código"
+                required
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-slate-600">
+                Stock inicial
+              </label>
+              <input
+                type="number"
+                min={0}
+                value={stockInicial}
+                onChange={(e) => setStockInicial(Number(e.target.value) || 0)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-slate-600">
+                Categoría
+              </label>
+              <select
+                value={categoriaNombre}
+                onChange={(e) => setCategoriaNombre(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
+              >
+                <option value="">Sin categoría</option>
+                {(categorias ?? []).map((c) => (
+                  <option key={c.id} value={c.nombre}>
+                    {c.nombre}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-slate-600">
+                Marca
+              </label>
+              <select
+                value={marcaNombre}
+                onChange={(e) => setMarcaNombre(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
+              >
+                <option value="">Sin marca</option>
+                {(marcas ?? []).map((m) => (
+                  <option key={m.id} value={m.nombre}>
+                    {m.nombre}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-slate-600">
+                Bodega / Ubicación
+              </label>
+              <select
+                value={bodegaNombre}
+                onChange={(e) => setBodegaNombre(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
+              >
+                <option value="">Sin bodega</option>
+                {(bodegas ?? []).map((b) => (
+                  <option key={b.id} value={b.nombre}>
+                    {b.nombre}
+                    {b.codigo ? ` · ${b.codigo}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="flex justify-end pt-2">
+            <Button
+              type="submit"
+              variant="primary"
+              disabled={createMut.isPending}
+            >
+              {createMut.isPending ? "Creando..." : "Crear producto"}
+            </Button>
+          </div>
+        </form>
       </div>
 
-      {/* Formulario de creación */}
-      {isFormOpen && (
-        <div className="mb-6 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-          <h2 className="text-base font-semibold text-slate-900">
-            Nuevo producto
-          </h2>
-          <p className="mt-1 text-sm text-slate-600">
-            Ingresa los datos básicos del producto. Más adelante
-            podrás editar detalles si es necesario.
-          </p>
-
-          {formError && (
-            <div className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
-              {formError}
-            </div>
-          )}
-
-          <form className="mt-4 space-y-4" onSubmit={handleSubmit}>
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">
-                  Nombre *
-                </label>
-                <input
-                  type="text"
-                  value={form.nombre}
-                  onChange={(e) =>
-                    handleChange("nombre", e.target.value)
-                  }
-                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                  placeholder="Ej: Extintor PQS 6kg"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">
-                  SKU / Código interno *
-                </label>
-                <input
-                  type="text"
-                  value={form.sku}
-                  onChange={(e) =>
-                    handleChange("sku", e.target.value)
-                  }
-                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                  placeholder="Ej: 001"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">
-                  Marca
-                </label>
-                <input
-                  type="text"
-                  value={form.marca}
-                  onChange={(e) =>
-                    handleChange("marca", e.target.value)
-                  }
-                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                  placeholder="Ej: Mepi, Dräger..."
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">
-                  Categoría
-                </label>
-                <input
-                  type="text"
-                  value={form.categoria}
-                  onChange={(e) =>
-                    handleChange("categoria", e.target.value)
-                  }
-                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                  placeholder="Ej: Extintores, EPP..."
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">
-                  Ubicación (bodega / estantería)
-                </label>
-                <input
-                  type="text"
-                  value={form.ubicacion}
-                  onChange={(e) =>
-                    handleChange("ubicacion", e.target.value)
-                  }
-                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                  placeholder="Ej: Bodega 1, rack A-3"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">
-                  Código de barras
-                </label>
-                <input
-                  type="text"
-                  value={form.codigoBarras}
-                  onChange={(e) =>
-                    handleChange("codigoBarras", e.target.value)
-                  }
-                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                  placeholder="Opcional"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">
-                  Stock inicial
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  value={form.stock}
-                  onChange={(e) =>
-                    handleChange("stock", e.target.value)
-                  }
-                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                  placeholder="0"
-                />
-                <p className="mt-1 text-xs text-slate-500">
-                  Si lo dejas vacío, se creará con stock 0 y luego
-                  podrás hacer un ingreso.
-                </p>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsFormOpen(false);
-                  setFormError(null);
-                }}
-                className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-              >
-                Cancelar
-              </button>
-              <button
-                type="submit"
-                disabled={createMutation.isPending}
-                className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
-              >
-                {createMutation.isPending
-                  ? "Creando..."
-                  : "Crear producto"}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* Tabla de productos */}
-      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-        {isLoading ? (
-          <div className="p-4 text-sm text-slate-600">
-            Cargando productos...
-          </div>
-        ) : error ? (
-          <div className="p-4 text-sm text-red-600">
-            Ocurrió un error al cargar los productos.
-          </div>
-        ) : (
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-50">
+      {/* Tabla de productos actuales */}
+      <div className="mt-6 mx-0 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-600">
+            <tr>
+              <th className="px-4 py-3 text-left">SKU</th>
+              <th className="px-4 py-3 text-left">Nombre</th>
+              <th className="px-4 py-3 text-left">Código barras</th>
+              <th className="px-4 py-3 text-left">Categoría</th>
+              <th className="px-4 py-3 text-left">Marca</th>
+              <th className="px-4 py-3 text-left">Bodega</th>
+              <th className="px-4 py-3 text-right">Stock</th>
+              <th className="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {productosLoading && (
               <tr>
-                <th className="px-4 py-2 text-left font-medium text-slate-700">
-                  ID
-                </th>
-                <th className="px-4 py-2 text-left font-medium text-slate-700">
-                  Nombre
-                </th>
-                <th className="px-4 py-2 text-left font-medium text-slate-700">
-                  SKU
-                </th>
-                <th className="px-4 py-2 text-left font-medium text-slate-700">
-                  Stock
-                </th>
+                <td colSpan={8} className="px-4 py-6">
+                  <div className="h-4 w-1/2 animate-pulse rounded bg-slate-200" />
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {productos && productos.length > 0 ? (
-                productos.map((p) => (
-                  <tr key={p.id} className="border-t border-slate-100">
-                    <td className="px-4 py-2 text-slate-800">{p.id}</td>
-                    <td className="px-4 py-2 text-slate-800">
-                      {p.nombre || "—"}
-                    </td>
-                    <td className="px-4 py-2 text-slate-800">
-                      {p.sku || "—"}
-                    </td>
-                    <td className="px-4 py-2 text-slate-800">
-                      {p.stock ?? 0}
-                    </td>
-                  </tr>
-                ))
-              ) : (
+            )}
+
+            {productosError && !productosLoading && (
+              <tr>
+                <td colSpan={8} className="px-4 py-6 text-red-700">
+                  Error al cargar productos.{" "}
+                  <Button size="sm" onClick={() => refetchProductos()}>
+                    Reintentar
+                  </Button>
+                </td>
+              </tr>
+            )}
+
+            {!productosLoading &&
+              !productosError &&
+              filteredProductos.length === 0 && (
                 <tr>
                   <td
-                    className="px-4 py-4 text-center text-slate-500"
-                    colSpan={4}
+                    colSpan={8}
+                    className="px-4 py-10 text-center text-slate-500"
                   >
-                    No hay productos registrados.
+                    No hay productos registrados aún.
                   </td>
                 </tr>
               )}
-            </tbody>
-          </table>
-        )}
+
+            {!productosLoading &&
+              !productosError &&
+              filteredProductos.map((p) => (
+                <tr
+                  key={p.id}
+                  className="border-t hover:bg-slate-50/60"
+                >
+                  <td className="px-4 py-3 font-mono">{p.sku}</td>
+                  <td className="px-4 py-3">{p.nombre}</td>
+                  <td className="px-4 py-3 font-mono">
+                    {p.codigoBarras ?? ""}
+                  </td>
+                  <td className="px-4 py-3">{p.categoria ?? ""}</td>
+                  <td className="px-4 py-3">{p.marca ?? ""}</td>
+                  <td className="px-4 py-3">{p.ubicacion ?? ""}</td>
+                  <td className="px-4 py-3 text-right">
+                    {p.stock.toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => handleDelete(p)}
+                      disabled={deleteMut.isPending}
+                    >
+                      Eliminar
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
       </div>
-    </div>
+    </section>
   );
 }
