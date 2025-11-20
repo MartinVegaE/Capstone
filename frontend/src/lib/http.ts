@@ -1,80 +1,115 @@
-// src/lib/http.ts
-import axios, { AxiosError, type InternalAxiosRequestConfig } from "axios";
+import axios from "axios";
+import type {
+  AxiosError,
+  AxiosInstance,
+  AxiosRequestConfig,
+  AxiosResponse,
+} from "axios";
 
-/** Lee el token de acceso guardado (localStorage o lo que uses) */
-function getAccessToken(): string | null {
-  return localStorage.getItem("token");
-}
+const API_URL =
+  import.meta.env.VITE_API_URL?.replace(/\/+$/, "") || "http://localhost:4000";
 
-/** Guarda el token nuevo tras el refresh */
-function setAccessToken(token: string | null) {
-  if (token) localStorage.setItem("token", token);
-  else localStorage.removeItem("token");
-}
-
-/** Instancia base */
-const http = axios.create({
-  baseURL: import.meta.env.VITE_API_URL, // ej: http://localhost:4000
-  withCredentials: true,                 // incluye cookies para /auth/refresh si aplica
-  timeout: 20000,
+const http: AxiosInstance = axios.create({
+  baseURL: API_URL,
+  timeout: 15000,
+  headers: {
+    "Content-Type": "application/json",
+  },
 });
 
-/** Interceptor de request: agrega Authorization si hay token */
-http.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-  const token = getAccessToken();
-  if (token) {
-    config.headers = config.headers ?? {};
-    (config.headers as any).Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
+http.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem("accessToken");
 
-/** Mecanismo de refresh sencillo para 401 */
-let refreshingPromise: Promise<string | null> | null = null;
-
-async function refreshToken(): Promise<string | null> {
-  // Evita disparar varios refresh a la vez
-  if (!refreshingPromise) {
-    refreshingPromise = fetch(`${import.meta.env.VITE_API_URL}/auth/refresh`, {
-      method: "POST",
-      credentials: "include",
-    })
-      .then(async (r) => (r.ok ? (await r.json())?.accessToken ?? null : null))
-      .finally(() => {
-        const t = refreshingPromise;
-        // pequeño retraso para que otros retries cuelguen del mismo promise
-        setTimeout(() => {
-          if (refreshingPromise === t) refreshingPromise = null;
-        }, 0);
-      });
-  }
-  return refreshingPromise;
-}
-
-http.interceptors.response.use(
-  (res) => res,
-  async (error: AxiosError) => {
-    const status = error.response?.status;
-    const original = error.config as any;
-
-    // Reintenta una sola vez tras refresh
-    if (status === 401 && !original?.__isRetry) {
-      original.__isRetry = true;
-      const newToken = await refreshToken();
-      if (newToken) {
-        setAccessToken(newToken);
-        original.headers = original.headers ?? {};
-        original.headers.Authorization = `Bearer ${newToken}`;
-        return http(original);
-      } else {
-        // token inválido/expirado definitivamente
-        setAccessToken(null);
-      }
+    if (token) {
+      const headers = (config.headers ?? {}) as any;
+      headers["Authorization"] = `Bearer ${token}`;
+      config.headers = headers;
     }
 
-    // Propaga el error
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+http.interceptors.response.use(
+  (response: AxiosResponse) => response,
+  (error: AxiosError) => {
+    if (error.response?.status === 401) {
+      // aquí podrías manejar logout
+    }
     return Promise.reject(error);
   }
 );
 
+// Helpers
+export async function httpGet<T>(
+  url: string,
+  config?: AxiosRequestConfig
+): Promise<T> {
+  const response = await http.get<T>(url, config);
+  return response.data;
+}
+
+export async function httpPost<T, B = unknown>(
+  url: string,
+  body?: B,
+  config?: AxiosRequestConfig
+): Promise<T> {
+  const response = await http.post<T>(url, body, config);
+  return response.data;
+}
+
+export async function httpPut<T, B = unknown>(
+  url: string,
+  body?: B,
+  config?: AxiosRequestConfig
+): Promise<T> {
+  const response = await http.put<T>(url, body, config);
+  return response.data;
+}
+
+export async function httpDelete<T>(
+  url: string,
+  config?: AxiosRequestConfig
+): Promise<T> {
+  const response = await http.delete<T>(url, config);
+  return response.data;
+}
+
+export function isHttpError(error: unknown): error is AxiosError {
+  return axios.isAxiosError(error);
+}
+
+export function getHttpErrorMessage(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const status = error.response?.status;
+    const data = error.response?.data as any;
+
+    if (data?.message && typeof data.message === "string") {
+      return data.message;
+    }
+
+    if (status === 0 || error.code === "ECONNABORTED") {
+      return "No se pudo contactar con el servidor. Intenta nuevamente.";
+    }
+
+    if (status === 400) return "Solicitud inválida.";
+    if (status === 401) return "No autorizado.";
+    if (status === 403) return "Acceso denegado.";
+    if (status === 404) return "Recurso no encontrado.";
+    if (status && status >= 500)
+      return "Error interno del servidor. Intenta más tarde.";
+
+    return "Ocurrió un error al comunicarse con el servidor.";
+  }
+
+  return "Ocurrió un error inesperado.";
+}
+
+// exports con nombre
+export { http };
+
+// ⬇⬇⬇ ESTE ES EL NUEVO
+// export default para que import http from "../lib/http" funcione
 export default http;

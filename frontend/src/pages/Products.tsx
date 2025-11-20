@@ -1,590 +1,384 @@
-import React, { useMemo, useState } from "react";
-import ControlPanel, { type ViewMode } from "../components/layout/ControlPanel";
-import KanbanBoard from "../components/views/KanbanBoard";
-import Button from "../components/ui/Button";
-import { toCsv, downloadCsv } from "../lib/csv";
-
-// Ajusta estos imports a tu API real si difieren:
+// src/pages/Products.tsx
+import { useState } from "react";
+import type { FormEvent } from "react";
 import {
-  useProducts,
-  useUpdateProduct,
-  useCreateProduct,
-  type Product,
-} from "../api/products";
+  useQuery,
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { httpGet, httpPost } from "../lib/http";
 
-// Si tu API ya exporta SortDir, bórralo y usa el de tu API.
-type SortDir = "asc" | "desc";
-
-function fmtInt(n: number | undefined | null) {
-  const v = Number(n ?? 0);
-  return Number.isFinite(v) ? v.toLocaleString() : "-";
+// Tipo que viene del backend
+export interface Producto {
+  id: number;
+  sku: string;
+  nombre: string;
+  marca?: string | null;
+  categoria?: string | null;
+  ubicacion?: string | null;
+  codigoBarras?: string | null;
+  stock: number;
 }
 
-function Drawer({
-  open,
-  onClose,
-  children,
-  title,
-}: {
-  open: boolean;
-  onClose: () => void;
-  children: React.ReactNode;
-  title?: string;
-}) {
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-50">
-      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
-      <aside className="absolute right-0 top-0 h-full w-full max-w-xl overflow-y-auto border-l border-slate-200 bg-white shadow-2xl">
-        <div className="flex items-center justify-between border-b px-5 py-4">
-          <h3 className="text-lg font-semibold">{title ?? "Producto"}</h3>
-          <button
-            onClick={onClose}
-            className="rounded-full p-1 hover:bg-slate-100"
-          >
-            ✕
-          </button>
-        </div>
-        <div className="p-5">{children}</div>
-      </aside>
-    </div>
-  );
+// Payload que enviamos al backend al crear
+interface CreateProductoBody {
+  sku: string;
+  nombre: string;
+  marca?: string | null;
+  categoria?: string | null;
+  ubicacion?: string | null;
+  codigoBarras?: string | null;
+  stock: number;
+}
+
+// Para el formulario (todo como string)
+interface CreateProductoFormState {
+  sku: string;
+  nombre: string;
+  marca: string;
+  categoria: string;
+  ubicacion: string;
+  codigoBarras: string;
+  stock: string;
+}
+
+async function fetchProductos(): Promise<Producto[]> {
+  return httpGet<Producto[]>("/productos");
 }
 
 export default function ProductsPage() {
-  // UI state
-  const [q, setQ] = useState("");
-  const [view, setView] = useState<ViewMode>("list");
-  const [page, setPage] = useState(1);
-  const pageSize = 10;
+  const queryClient = useQueryClient();
 
-  const [brand, setBrand] = useState<string>("");
-  const [category, setCategory] = useState<string>("");
+  const {
+    data: productos,
+    isLoading,
+    error,
+  } = useQuery<Producto[]>({
+    queryKey: ["productos"],
+    queryFn: fetchProductos,
+  });
 
-  const [sortBy, setSortBy] = useState<
-    "sku" | "nombre" | "marca" | "categoria" | "stock"
-  >("nombre");
-  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [isFormOpen, setIsFormOpen] = useState(false);
+  const [form, setForm] = useState<CreateProductoFormState>({
+    sku: "",
+    nombre: "",
+    marca: "",
+    categoria: "",
+    ubicacion: "",
+    codigoBarras: "",
+    stock: "",
+  });
+  const [formError, setFormError] = useState<string | null>(null);
 
-  // Data
-  const { data, isLoading, isError, refetch } = useProducts({
-    q,
-    page,
-    pageSize,
-    ...(brand ? { brand } : {}),
-    ...(category ? { category } : {}),
-    ...(sortBy ? { sortBy } : {}),
-    ...(sortDir ? { sortDir } : {}),
-  } as any);
+  const createMutation = useMutation<
+    Producto,
+    unknown,
+    CreateProductoBody
+  >({
+    mutationFn: (body) =>
+      httpPost<Producto, CreateProductoBody>("/productos", body),
+    onSuccess: () => {
+      setForm({
+        sku: "",
+        nombre: "",
+        marca: "",
+        categoria: "",
+        ubicacion: "",
+        codigoBarras: "",
+        stock: "",
+      });
+      setFormError(null);
+      setIsFormOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["productos"] });
+    },
+    onError: (err: any) => {
+      const msg =
+        err?.response?.data?.error ||
+        err?.message ||
+        "No se pudo crear el producto.";
+      setFormError(msg);
+    },
+  });
 
-  const total = data?.total ?? 0;
-  const rows: Product[] = data?.data ?? [];
-  const totalPages = useMemo(
-    () => Math.max(1, Math.ceil(total / pageSize)),
-    [total, pageSize]
-  );
+  function handleChange(
+    field: keyof CreateProductoFormState,
+    value: string
+  ) {
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }
 
-  // 🔧 Fix de tipos: garantizamos que solo haya strings
-  const brands = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          rows
-            .map((p) => p.marca)
-            .filter(
-              (b): b is string => typeof b === "string" && b.trim() !== ""
-            )
-        )
-      ).sort(),
-    [rows]
-  );
-
-  const categories = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          rows
-            .map((p) => p.categoria)
-            .filter(
-              (c): c is string => typeof c === "string" && c.trim() !== ""
-            )
-        )
-      ).sort(),
-    [rows]
-  );
-
-  // Edit / Create drawer
-  const [editing, setEditing] = useState<Product | null>(null);
-  const [isCreating, setIsCreating] = useState(false);
-
-  const updateMut = useUpdateProduct(editing?.id ?? 0);
-  const createMut = useCreateProduct();
-
-  const openEdit = (p: Product) => {
-    setEditing(p);
-    setIsCreating(false);
-  };
-
-  const openCreate = () => {
-    setEditing(null);
-    setIsCreating(true);
-  };
-
-  const closeDrawer = () => {
-    setEditing(null);
-    setIsCreating(false);
-  };
-
-  const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+  function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    const fd = new FormData(e.currentTarget);
+    setFormError(null);
 
-    const dto = {
-      sku: String(fd.get("sku") || (editing?.sku ?? "")),
-      nombre: String(
-        fd.get("nombre") || editing?.nombre || (editing as any)?.name || ""
-      ),
-      marca: String(fd.get("marca") || editing?.marca || ""),
-      categoria: String(fd.get("categoria") || editing?.categoria || ""),
-      stock: Number(fd.get("stock") || editing?.stock || 0),
-    } as Partial<Product>;
+    const sku = form.sku.trim();
+    const nombre = form.nombre.trim();
 
-    if (!dto.sku || !dto.nombre) {
-      alert("SKU y Nombre son obligatorios");
+    if (!sku || !nombre) {
+      setFormError("SKU y nombre son obligatorios.");
       return;
     }
 
-    if (isCreating) {
-      createMut.mutate(dto, {
-        onSuccess: () => {
-          closeDrawer();
-          refetch();
-        },
-        onError: () => alert("No se pudo crear el producto"),
-      });
-    } else if (editing) {
-      updateMut.mutate(dto, {
-        onSuccess: () => {
-          closeDrawer();
-          refetch();
-        },
-        onError: () => alert("No se pudo guardar"),
-      });
+    const stockNumber =
+      form.stock.trim() === "" ? 0 : Number(form.stock.trim());
+
+    if (!Number.isFinite(stockNumber) || stockNumber < 0) {
+      setFormError(
+        "El stock debe ser un número mayor o igual a 0."
+      );
+      return;
     }
-  };
 
-  function toggleSort(col: typeof sortBy) {
-    if (sortBy === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else {
-      setSortBy(col);
-      setSortDir(col === "nombre" ? "asc" : "desc");
-    }
-    setPage(1);
+    const body: CreateProductoBody = {
+      sku,
+      nombre,
+      marca: form.marca.trim() || null,
+      categoria: form.categoria.trim() || null,
+      ubicacion: form.ubicacion.trim() || null,
+      codigoBarras: form.codigoBarras.trim() || null,
+      stock: stockNumber,
+    };
+
+    createMutation.mutate(body);
   }
-
-  function exportCsv() {
-    const csv = toCsv(
-      rows.map((p) => ({
-        id: (p as any).id ?? "",
-        sku: p.sku,
-        nombre: (p as any).nombre ?? (p as any).name ?? "",
-        marca: (p as any).marca ?? "",
-        categoria: (p as any).categoria ?? "",
-        stock: p.stock ?? 0,
-      })),
-      ["id", "sku", "nombre", "marca", "categoria", "stock"]
-    );
-    downloadCsv("productos.csv", csv);
-  }
-
-  const columnsKanban = ["Bajo stock", "OK", "Sobre stock"];
-  const columnOf = (p: Product) => {
-    const s = Number(p.stock ?? 0);
-    if (s <= 10) return "Bajo stock";
-    if (s >= 200) return "Sobre stock";
-    return "OK";
-  };
-  const renderCard = (p: Product) => (
-    <div>
-      <div className="mb-1 flex items-center justify-between">
-        <div className="text-sm font-semibold text-slate-800">
-          {(p as any).nombre ?? (p as any).name ?? "-"}
-        </div>
-        <span className="rounded bg-slate-100 px-2 py-0.5 text-xs font-mono">
-          {p.sku}
-        </span>
-      </div>
-      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-        {(p as any).marca && (
-          <span className="rounded bg-slate-100 px-2 py-0.5">
-            {(p as any).marca}
-          </span>
-        )}
-        {(p as any).categoria && (
-          <span className="rounded bg-slate-100 px-2 py-0.5">
-            {(p as any).categoria}
-          </span>
-        )}
-        <span className="rounded bg-emerald-50 px-2 py-0.5 text-emerald-700">
-          Stock: {fmtInt(p.stock)}
-        </span>
-      </div>
-    </div>
-  );
 
   return (
-    <section className="w-full px-6 pb-6">
-      <h2 className="sr-only">Productos</h2>
-
-      <ControlPanel
-        search={q}
-        onSearch={(v) => {
-          setQ(v);
-          setPage(1);
-        }}
-        view={view}
-        onChangeView={setView}
-        onOpenFilters={() => {}}
-        onOpenGroupBy={() => {}}
-        onToggleFavorite={() => {}}
-      />
-
-      {/* Filtros */}
-      <div className="w-full px-6 pt-3">
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <select
-            value={brand}
-            onChange={(e) => {
-              setBrand(e.target.value);
-              setPage(1);
-            }}
-            className="rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm"
-          >
-            <option value="">Marca (todas)</option>
-            {brands.map((b) => (
-              <option key={b} value={b}>
-                {b}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={category}
-            onChange={(e) => {
-              setCategory(e.target.value);
-              setPage(1);
-            }}
-            className="rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm"
-          >
-            <option value="">Categoría (todas)</option>
-            {categories.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
-
-          <div className="ml-auto flex items-center gap-2">
-            {/* 👇 Nuevo botón de crear */}
-            <Button variant="primary" onClick={openCreate}>
-              Nuevo producto
-            </Button>
-
-            <Button variant="secondary" onClick={exportCsv}>
-              Exportar CSV
-            </Button>
-            {(brand || category) && (
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  setBrand("");
-                  setCategory("");
-                  setPage(1);
-                }}
-              >
-                Limpiar filtros
-              </Button>
-            )}
-          </div>
+    <div className="mx-auto max-w-7xl p-6">
+      {/* Header de la página */}
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-slate-900">
+            Productos
+          </h1>
+          <p className="mt-1 text-sm text-slate-600">
+            Listado de productos registrados en el inventario.
+          </p>
         </div>
+
+        <button
+          type="button"
+          onClick={() => setIsFormOpen((open) => !open)}
+          className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+        >
+          {isFormOpen ? "Cerrar formulario" : "+ Nuevo producto"}
+        </button>
       </div>
 
-      {/* Contenido */}
-      {view === "kanban" ? (
-        <>
-          {isLoading && (
-            <div className="w-full px-6 py-6">
-              <div className="h-4 w-1/2 animate-pulse rounded bg-slate-200" />
+      {/* Formulario de creación */}
+      {isFormOpen && (
+        <div className="mb-6 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+          <h2 className="text-base font-semibold text-slate-900">
+            Nuevo producto
+          </h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Ingresa los datos básicos del producto. Más adelante
+            podrás editar detalles si es necesario.
+          </p>
+
+          {formError && (
+            <div className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+              {formError}
             </div>
           )}
-          {isError && (
-            <div className="w-full px-6 py-6 text-red-700">
-              Error al cargar productos.{" "}
-              <Button size="sm" onClick={() => refetch()}>
-                Reintentar
-              </Button>
-            </div>
-          )}
-          {!isLoading && !isError && (
-            <KanbanBoard<Product>
-              columns={columnsKanban}
-              items={rows}
-              columnOf={columnOf}
-              renderCard={renderCard}
-              onOpen={(p) => openEdit(p)}
-              emptyText="Sin productos en esta columna"
-            />
-          )}
-        </>
-      ) : (
-        <>
-          <div className="mx-6 overflow-hidden rounded-2xl border border-slate-200 bg-white">
-            <div className="max-h-[68vh] overflow-auto">
-              <table className="w-full text-[13px]">
-                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
-                  <tr>
-                    <Th
-                      onClick={() => toggleSort("sku")}
-                      active={sortBy === "sku"}
-                      dir={sortDir}
-                    >
-                      SKU
-                    </Th>
-                    <Th
-                      onClick={() => toggleSort("nombre")}
-                      active={sortBy === "nombre"}
-                      dir={sortDir}
-                    >
-                      Nombre
-                    </Th>
-                    <Th
-                      onClick={() => toggleSort("marca")}
-                      active={sortBy === "marca"}
-                      dir={sortDir}
-                    >
-                      Marca
-                    </Th>
-                    <Th
-                      onClick={() => toggleSort("categoria")}
-                      active={sortBy === "categoria"}
-                      dir={sortDir}
-                    >
-                      Categoría
-                    </Th>
-                    <Th
-                      onClick={() => toggleSort("stock")}
-                      active={sortBy === "stock"}
-                      dir={sortDir}
-                    >
-                      Stock
-                    </Th>
-                    <th className="px-4 py-2.5"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {isLoading && (
-                    <tr>
-                      <td colSpan={6} className="px-4 py-6">
-                        <div className="h-4 w-1/2 animate-pulse rounded bg-slate-200" />
-                      </td>
-                    </tr>
-                  )}
 
-                  {isError && (
-                    <tr>
-                      <td colSpan={6} className="px-4 py-6 text-red-700">
-                        Error al cargar productos.{" "}
-                        <Button size="sm" onClick={() => refetch()}>
-                          Reintentar
-                        </Button>
-                      </td>
-                    </tr>
-                  )}
+          <form className="mt-4 space-y-4" onSubmit={handleSubmit}>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  Nombre *
+                </label>
+                <input
+                  type="text"
+                  value={form.nombre}
+                  onChange={(e) =>
+                    handleChange("nombre", e.target.value)
+                  }
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  placeholder="Ej: Extintor PQS 6kg"
+                  required
+                />
+              </div>
 
-                  {!isLoading && !isError && rows.length === 0 && (
-                    <tr>
-                      <td
-                        colSpan={6}
-                        className="px-4 py-10 text-center text-slate-500"
-                      >
-                        No hay productos.
-                      </td>
-                    </tr>
-                  )}
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  SKU / Código interno *
+                </label>
+                <input
+                  type="text"
+                  value={form.sku}
+                  onChange={(e) =>
+                    handleChange("sku", e.target.value)
+                  }
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  placeholder="Ej: 001"
+                  required
+                />
+              </div>
 
-                  {!isLoading &&
-                    !isError &&
-                    rows.map((p, i) => (
-                      <tr
-                        key={(p as any).id ?? p.sku}
-                        className={`border-t ${
-                          i % 2 ? "bg-slate-50/40" : "bg-white"
-                        } hover:bg-indigo-50/40`}
-                      >
-                        <td className="px-4 py-2.5 font-mono">{p.sku}</td>
-                        <td className="px-4 py-2.5">
-                          {(p as any).nombre ?? (p as any).name ?? "-"}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          {(p as any).marca ?? ""}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          {(p as any).categoria ?? ""}
-                        </td>
-                        <td className="px-4 py-2.5">{fmtInt(p.stock)}</td>
-                        <td className="px-4 py-2.5 text-right">
-                          <Button size="sm" onClick={() => openEdit(p)}>
-                            Editar
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  Marca
+                </label>
+                <input
+                  type="text"
+                  value={form.marca}
+                  onChange={(e) =>
+                    handleChange("marca", e.target.value)
+                  }
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  placeholder="Ej: Mepi, Dräger..."
+                />
+              </div>
 
-          {!isLoading && !isError && totalPages > 1 && (
-            <div className="mx-6 mt-3 flex items-center justify-between text-sm text-slate-600">
-              <span>
-                Página {page} de {totalPages} · {total} resultados
-              </span>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={page === 1}
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                >
-                  ← Anterior
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={page === totalPages}
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                >
-                  Siguiente →
-                </Button>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  Categoría
+                </label>
+                <input
+                  type="text"
+                  value={form.categoria}
+                  onChange={(e) =>
+                    handleChange("categoria", e.target.value)
+                  }
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  placeholder="Ej: Extintores, EPP..."
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  Ubicación (bodega / estantería)
+                </label>
+                <input
+                  type="text"
+                  value={form.ubicacion}
+                  onChange={(e) =>
+                    handleChange("ubicacion", e.target.value)
+                  }
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  placeholder="Ej: Bodega 1, rack A-3"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  Código de barras
+                </label>
+                <input
+                  type="text"
+                  value={form.codigoBarras}
+                  onChange={(e) =>
+                    handleChange("codigoBarras", e.target.value)
+                  }
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  placeholder="Opcional"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  Stock inicial
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  value={form.stock}
+                  onChange={(e) =>
+                    handleChange("stock", e.target.value)
+                  }
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  placeholder="0"
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  Si lo dejas vacío, se creará con stock 0 y luego
+                  podrás hacer un ingreso.
+                </p>
               </div>
             </div>
-          )}
-        </>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsFormOpen(false);
+                  setFormError(null);
+                }}
+                className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={createMutation.isPending}
+                className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
+              >
+                {createMutation.isPending
+                  ? "Creando..."
+                  : "Crear producto"}
+              </button>
+            </div>
+          </form>
+        </div>
       )}
 
-      {/* Drawer editar / crear */}
-      <Drawer
-        open={editing !== null || isCreating}
-        onClose={closeDrawer}
-        title={
-          isCreating
-            ? "Nuevo producto"
-            : editing
-            ? `Editar ${editing.sku}`
-            : "Producto"
-        }
-      >
-        <form onSubmit={onSubmit} className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="mb-1 block text-sm text-slate-600">
-                SKU
-              </label>
-              <input
-                name="sku"
-                defaultValue={editing?.sku ?? ""}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm font-mono"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-slate-600">
-                Nombre
-              </label>
-              <input
-                name="nombre"
-                defaultValue={
-                  editing
-                    ? (editing as any).nombre ??
-                      (editing as any).name ??
-                      ""
-                    : ""
-                }
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-slate-600">
-                Marca
-              </label>
-              <input
-                name="marca"
-                defaultValue={(editing as any)?.marca ?? ""}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-slate-600">
-                Categoría
-              </label>
-              <input
-                name="categoria"
-                defaultValue={(editing as any)?.categoria ?? ""}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-slate-600">
-                Stock
-              </label>
-              <input
-                name="stock"
-                type="number"
-                min={0}
-                defaultValue={Number(editing?.stock ?? 0)}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
-              />
-            </div>
+      {/* Tabla de productos */}
+      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+        {isLoading ? (
+          <div className="p-4 text-sm text-slate-600">
+            Cargando productos...
           </div>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={closeDrawer}
-            >
-              Cancelar
-            </Button>
-            <Button type="submit" variant="primary">
-              {isCreating ? "Crear producto" : "Guardar cambios"}
-            </Button>
+        ) : error ? (
+          <div className="p-4 text-sm text-red-600">
+            Ocurrió un error al cargar los productos.
           </div>
-        </form>
-      </Drawer>
-    </section>
-  );
-}
-
-function Th({
-  children,
-  onClick,
-  active,
-  dir,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  active?: boolean;
-  dir?: "asc" | "desc";
-}) {
-  return (
-    <th
-      className="cursor-pointer select-none px-4 py-2.5 text-left"
-      onClick={onClick}
-      title="Ordenar"
-    >
-      <span className="inline-flex items-center gap-1">
-        {children}
-        {active && <span>{dir === "desc" ? "▼" : "▲"}</span>}
-      </span>
-    </th>
+        ) : (
+          <table className="min-w-full text-sm">
+            <thead className="bg-slate-50">
+              <tr>
+                <th className="px-4 py-2 text-left font-medium text-slate-700">
+                  ID
+                </th>
+                <th className="px-4 py-2 text-left font-medium text-slate-700">
+                  Nombre
+                </th>
+                <th className="px-4 py-2 text-left font-medium text-slate-700">
+                  SKU
+                </th>
+                <th className="px-4 py-2 text-left font-medium text-slate-700">
+                  Stock
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {productos && productos.length > 0 ? (
+                productos.map((p) => (
+                  <tr key={p.id} className="border-t border-slate-100">
+                    <td className="px-4 py-2 text-slate-800">{p.id}</td>
+                    <td className="px-4 py-2 text-slate-800">
+                      {p.nombre || "—"}
+                    </td>
+                    <td className="px-4 py-2 text-slate-800">
+                      {p.sku || "—"}
+                    </td>
+                    <td className="px-4 py-2 text-slate-800">
+                      {p.stock ?? 0}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td
+                    className="px-4 py-4 text-center text-slate-500"
+                    colSpan={4}
+                  >
+                    No hay productos registrados.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
   );
 }

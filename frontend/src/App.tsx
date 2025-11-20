@@ -7,6 +7,8 @@ import AppShell from "./components/layout/AppShell";
 import ProductsPage from "./pages/Products";
 import MovementsPage from "./pages/Movements";
 import IngresosPage from "./pages/Ingresos";
+import LoginPage from "./pages/Login";
+import { useAuth } from "./app/AuthContext";
 
 // Dashboard placeholder (puedes mejorarlo luego)
 function Dashboard() {
@@ -31,18 +33,39 @@ function NotFound() {
 }
 
 export default function App() {
+  const { user, loading } = useAuth();
+
+  // Mientras vemos si hay sesión guardada
+  if (loading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-slate-100 text-slate-500">
+        Cargando sesión...
+      </div>
+    );
+  }
+
   return (
     <BrowserRouter>
-      <AppShell>
+      {user ? (
+        // 💡 Usuario autenticado: mostramos el panel completo
+        <AppShell>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/productos" element={<ProductsPage />} />
+            <Route path="/movimientos" element={<MovementsPage />} />
+            <Route path="/ingresos" element={<IngresosPage />} />
+            <Route path="/404" element={<NotFound />} />
+            <Route path="*" element={<Navigate to="/404" replace />} />
+          </Routes>
+        </AppShell>
+      ) : (
+        // 🚪 Sin usuario: solo se puede ver el login
         <Routes>
-          <Route index element={<Dashboard />} />
-          <Route path="productos" element={<ProductsPage />} />
-          <Route path="movimientos" element={<MovementsPage />} />
-          <Route path="ingresos" element={<IngresosPage />} />
-          <Route path="404" element={<NotFound />} />
-          <Route path="*" element={<Navigate to="/404" replace />} />
+          <Route path="/login" element={<LoginPage />} />
+          {/* Cualquier otra ruta redirige a /login */}
+          <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
-      </AppShell>
+      )}
     </BrowserRouter>
   );
 }

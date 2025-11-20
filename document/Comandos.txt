@@ -26,3 +26,8 @@ git push -u origin main → Sube la rama main al remoto y la deja como upstream.
 git fetch origin → Descarga referencias del remoto (sin fusionar).
 git pull --rebase origin main → Trae cambios remotos y re-aplica tus commits encima (historial más limpio).
 git mv <origen> <destino> → Mueve/renombra archivos o carpetas trackeadas por Git.
+
+Usuario de prueba:
+Super admin:
+   email:    admin@fireprevention.cl
+   password: Admin1234!
