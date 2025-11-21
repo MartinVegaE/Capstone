@@ -1,86 +1,138 @@
+// src/components/layout/AppShell.tsx
 import React from "react";
-import { NavLink, useLocation } from "react-router-dom";
-import Badge from "../ui/Badge";
+import type { ReactNode } from "react";
+import { NavLink } from "react-router-dom";
+import { useAuth } from "../../app/AuthContext";
 
-export default function AppShell({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex h-screen w-full bg-slate-50">
-      <Sidebar />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar />
-        <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
-      </div>
-    </div>
-  );
+interface AppShellProps {
+  children: ReactNode;
 }
 
-function Topbar() {
+export default function AppShell({ children }: AppShellProps) {
+  const { user, logout } = useAuth();
+
+  const baseLink =
+    "group flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition-colors";
+  const inactiveLink =
+    "text-slate-300 hover:bg-slate-800/60 hover:text-white";
+  const activeLink = "bg-slate-100/10 text-white";
+
   return (
-    <header className="sticky top-0 z-40 flex h-14 items-center border-b bg-white/80 backdrop-blur px-6">
-      <div className="flex w-full items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="text-lg font-semibold tracking-tight">Fire Prevention</span>
-          <Badge tone="brand">Inventario</Badge>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <div className="h-8 w-8 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600" />
-            <div className="text-sm">
-              <div className="font-medium">Usuario</div>
-              <div className="text-xs text-slate-500">admin@example.com</div>
+    <div className="flex min-h-screen bg-slate-100">
+      {/* Sidebar */}
+      <aside className="hidden w-64 flex-col bg-slate-900 text-slate-100 md:flex">
+        {/* Logo / Marca */}
+        <div className="flex h-16 items-center gap-3 border-b border-slate-800 px-5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-rose-500 text-lg font-bold shadow-lg">
+            FP
+          </div>
+          <div>
+            <div className="text-sm font-semibold">Fire Prevention</div>
+            <div className="text-xs text-slate-400">
+              Inventario &amp; PPP
             </div>
           </div>
         </div>
-      </div>
-    </header>
-  );
-}
 
-function Sidebar() {
-  const { pathname } = useLocation();
-  const links = [
-    { to: "/", label: "Panel", icon: "🏠", exact: true },
-    { to: "/productos", label: "Productos", icon: "📦" },
-    { to: "/movimientos", label: "Movimientos", icon: "🔄" },
-    { to: "/ingresos", label: "Ingresos", icon: "🧾" },
-  ];
+        {/* Navegación */}
+        <nav className="mt-4 flex-1 space-y-1 px-3">
+          <NavLink
+            to="/"
+            end
+            className={({ isActive }) =>
+              `${baseLink} ${isActive ? activeLink : inactiveLink}`
+            }
+          >
+            <span className="text-base">🏠</span>
+            <span>Panel</span>
+          </NavLink>
 
-  return (
-    <aside className="hidden w-64 shrink-0 border-r bg-white md:block">
-      <div className="flex h-14 items-center border-b px-4">
-        <div className="flex items-center gap-2">
-          <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-600 to-violet-600" />
-          <span className="text-base font-semibold">FP Admin</span>
+          <NavLink
+            to="/productos"
+            className={({ isActive }) =>
+              `${baseLink} ${isActive ? activeLink : inactiveLink}`
+            }
+          >
+            <span className="text-base">📦</span>
+            <span>Inventario</span>
+          </NavLink>
+
+          <NavLink
+            to="/ingresos"
+            className={({ isActive }) =>
+              `${baseLink} ${isActive ? activeLink : inactiveLink}`
+            }
+          >
+            <span className="text-base">📥</span>
+            <span>Ingresos</span>
+          </NavLink>
+
+          <NavLink
+            to="/movimientos"
+            className={({ isActive }) =>
+              `${baseLink} ${isActive ? activeLink : inactiveLink}`
+            }
+          >
+            <span className="text-base">📊</span>
+            <span>Movimientos</span>
+          </NavLink>
+        </nav>
+
+        {/* Footer sidebar */}
+        <div className="border-t border-slate-800 px-5 py-3 text-xs text-slate-500">
+          <div>© {new Date().getFullYear()} Fire Prevention</div>
+          <div className="text-[11px] text-slate-600">
+            Trazabilidad por PPP y proyectos.
+          </div>
         </div>
-      </div>
-      <nav className="p-3">
-        <ul className="space-y-1">
-          {links.map((l) => {
-            const isActive = l.exact ? pathname === l.to : pathname.startsWith(l.to);
-            return (
-              <li key={l.to}>
-                <NavLink
-                  to={l.to}
-                  className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm transition ${
-                    isActive ? "bg-indigo-50 font-medium text-indigo-700" : "text-slate-700 hover:bg-slate-50"
-                  }`}
-                  end={l.exact}
+      </aside>
+
+      {/* Contenido principal */}
+      <div className="flex min-h-screen flex-1 flex-col">
+        {/* Header */}
+        <header className="flex items-center justify-between border-b border-slate-200 bg-white/80 px-4 py-3 shadow-sm backdrop-blur-md md:px-6">
+          <div>
+            <h1 className="text-base font-semibold text-slate-900 md:text-lg">
+              Panel de inventario
+            </h1>
+            <p className="text-xs text-slate-500 md:text-sm">
+              Control de stock, PPP y movimientos.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {user && (
+              <>
+                <div className="hidden text-right md:block">
+                  <div className="text-sm font-medium text-slate-900">
+                    {user.email}
+                  </div>
+                  <div className="text-xs uppercase tracking-wide text-slate-500">
+                    {user.role}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50"
                 >
-                  <span className="text-base leading-none">{l.icon}</span>
-                  <span>{l.label}</span>
-                </NavLink>
-              </li>
-            );
-          })}
-        </ul>
-      </nav>
+                  Cerrar sesión
+                </button>
+              </>
+            )}
+          </div>
+        </header>
 
-      <div className="mt-auto p-3">
-        <div className="rounded-2xl border border-slate-200 p-3 text-xs text-slate-600">
-          <div className="mb-1 font-medium text-slate-800">Consejo</div>
-          Usa Lista/Kanban y los filtros para encontrar rápido.
-        </div>
+        {/* Main */}
+        <main className="flex-1 p-4 md:p-6">
+          <div className="mx-auto flex w-full max-w-7xl flex-col gap-4">
+            {/* Tarjeta de marco visual común para todas las páginas */}
+            <div className="rounded-2xl border border-slate-200 bg-white/90 p-4 shadow-sm md:p-6">
+              {children}
+            </div>
+          </div>
+        </main>
       </div>
-    </aside>
+    </div>
   );
 }

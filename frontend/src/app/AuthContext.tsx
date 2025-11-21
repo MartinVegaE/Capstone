@@ -2,81 +2,97 @@
 import React, {
   createContext,
   useContext,
-  useEffect,
   useState,
+  useEffect,
+  type ReactNode,
 } from "react";
-import type { ReactNode } from "react";
-import { loginApi } from "../api/auth";
-import type { AuthUserDTO } from "../api/auth";
 
-type AuthContextValue = {
-  user: AuthUserDTO | null;
-  token: string | null;
+type UserRole = "ADMIN" | "BODEGA"; // los roles que realmente usas hoy
+
+export interface User {
+  email: string;
+  role: UserRole;
+}
+
+interface AuthContextValue {
+  user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
-};
+}
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-const TOKEN_KEY = "fp_auth_token";
-const USER_KEY = "fp_auth_user";
+const STORAGE_KEY = "fp-auth";
+
+// misma base que el resto de tus hooks de API
+const API_BASE =
+  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AuthUserDTO | null>(null);
-  const [token, setToken] = useState<string | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Cargar sesión desde localStorage al iniciar
+  // Cargar sesión guardada desde localStorage al montar
   useEffect(() => {
     try {
-      const storedToken = localStorage.getItem(TOKEN_KEY);
-      const storedUser = localStorage.getItem(USER_KEY);
-
-      if (storedToken && storedUser) {
-        const parsedUser = JSON.parse(storedUser) as AuthUserDTO;
-        setUser(parsedUser);
-        setToken(storedToken);
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as User;
+        setUser(parsed);
       }
-    } catch (err) {
-      console.error("Error leyendo sesión guardada:", err);
+    } catch (e) {
+      console.error("[Auth] Error leyendo sesión de localStorage:", e);
       setUser(null);
-      setToken(null);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  const login = async (email: string, password: string) => {
-    const { token: newToken, user: newUser } = await loginApi(email, password);
+  // Login contra el backend real
+  async function login(email: string, password: string) {
+    const res = await fetch(`${API_BASE}/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
 
-    setUser(newUser);
-    setToken(newToken);
-    localStorage.setItem(TOKEN_KEY, newToken);
-    localStorage.setItem(USER_KEY, JSON.stringify(newUser));
-    // Más adelante aquí podríamos aplicar lógica de "redirección" según role
-  };
+    if (!res.ok) {
+      let msg = "Credenciales inválidas";
+      try {
+        const data = await res.json();
+        if (data?.error) msg = data.error;
+      } catch {
+        // ignoramos errores al parsear el JSON
+      }
+      throw new Error(msg);
+    }
 
-  const logout = () => {
+    // Esperamos un JSON de la forma: { email: string, role: string }
+    const data = await res.json();
+
+    const loggedUser: User = {
+      email: data.email,
+      role: (data.role ?? "BODEGA") as UserRole,
+    };
+
+    setUser(loggedUser);
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(loggedUser));
+  }
+
+  function logout() {
     setUser(null);
-    setToken(null);
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
-    // También podríamos limpiar headers Authorization cuando empecemos a usarlos
-  };
+    window.localStorage.removeItem(STORAGE_KEY);
+  }
 
-  const value: AuthContextValue = {
-    user,
-    token,
-    loading,
-    login,
-    logout,
-  };
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={{ user, loading, login, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
-export function useAuth() {
+export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext);
   if (!ctx) {
     throw new Error("useAuth debe usarse dentro de <AuthProvider>");

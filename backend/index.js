@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { PrismaClient } = require("@prisma/client");
+const bcrypt = require("bcryptjs"); // 👈 agrega esta línea
 
 const prisma = new PrismaClient();
 const app = express();
@@ -31,6 +32,7 @@ function toNumber(d) {
    Middlewares
    ========================= */
 
+
 // CORS amplio (incluye PATCH/DELETE y preflight)
 app.use(
   cors({
@@ -50,7 +52,80 @@ app.use((req, _res, next) => {
 
 // Health
 app.get("/health", (_req, res) => res.json({ ok: true }));
+/* =========================
+   Autenticación simple
+   ========================= */
 
+app.post("/login", async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    console.log("[POST /login] body:", req.body);
+
+    if (!email || !password) {
+      return res
+        .status(400)
+        .json({ error: "Email y contraseña son obligatorios" });
+    }
+
+    // normalizamos el correo
+    const emailNorm = String(email).trim().toLowerCase();
+
+    // ⚠️ Usamos el modelo REAL de Prisma: `user`
+    const user = await prisma.user.findUnique({
+      where: { email: emailNorm },
+    });
+
+    if (!user) {
+      console.warn("[POST /login] usuario no encontrado:", emailNorm);
+      return res.status(401).json({ error: "Credenciales inválidas" });
+    }
+
+    // Detectamos si el password está hasheado o en plano
+    const stored =
+      user.passwordHash ?? // si tu modelo tiene esta columna
+      user.password ??     // o quizás sólo `password`
+      null;
+
+    if (!stored) {
+      console.error("[POST /login] Usuario sin password en BD");
+      return res
+        .status(500)
+        .json({ error: "Usuario sin contraseña configurada" });
+    }
+
+    let ok = false;
+    // Si parece un hash bcrypt ($2a$, $2b$, $2y$) comparamos con bcrypt
+    if (
+      typeof stored === "string" &&
+      stored.startsWith("$2") &&
+      stored.length > 30
+    ) {
+      ok = await bcrypt.compare(String(password), stored);
+    } else {
+      // Si no es hash, comparamos texto plano (por si ese super user se creó así)
+      ok = String(password) === String(stored);
+    }
+
+    if (!ok) {
+      console.warn("[POST /login] password incorrecto para:", emailNorm);
+      return res.status(401).json({ error: "Credenciales inválidas" });
+    }
+
+    // Campo de rol: probamos `role` y `rol`, caemos a WAREHOUSE por defecto
+    const role = user.role ?? user.rol ?? "WAREHOUSE";
+
+    // 👇 Esto es lo que espera tu AuthContext
+    return res.json({
+      email: user.email,
+      role,
+    });
+  } catch (e) {
+    console.error("[POST /login] Error:", e);
+    return res
+      .status(500)
+      .json({ error: "Error interno al iniciar sesión" });
+  }
+});
 /* =========================
    Productos (CRUD)
    ========================= */
