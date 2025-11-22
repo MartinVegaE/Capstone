@@ -10,6 +10,7 @@ import IngresosPage from "./pages/Ingresos";
 import LoginPage from "./pages/Login";
 import DashboardPage from "./pages/Dashboard";
 import { useAuth } from "./app/AuthContext";
+import DevolucionesProveedorPage from "./pages/DevolucionesProveedor";
 
 // 404
 function NotFound() {
@@ -53,6 +54,11 @@ export default function App() {
             {/* 404 */}
             <Route path="/404" element={<NotFound />} />
             <Route path="*" element={<Navigate to="/404" replace />} />
+             <Route
+                path="devoluciones-proveedor"
+                element={<DevolucionesProveedorPage />}
+              />
+            <Route path="*" element={<NotFound />} />
           </Routes>
         </AppShell>
       ) : (

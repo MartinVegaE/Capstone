@@ -7,7 +7,7 @@
     "build": "tsc",
     "start": "node dist/index,js",
     "test": "jest",
-    "seed": "node seed.js"
+    "seed": "node prisma/seed.js"
   },
   "keywords": [
     "backend",

@@ -76,6 +76,17 @@ export default function AppShell({ children }: AppShellProps) {
             <span className="text-base">📊</span>
             <span>Movimientos</span>
           </NavLink>
+
+          {/* 🔁 Nuevo menú: Devoluciones a proveedor */}
+          <NavLink
+            to="/devoluciones-proveedor"
+            className={({ isActive }) =>
+              `${baseLink} ${isActive ? activeLink : inactiveLink}`
+            }
+          >
+            <span className="text-base">↩️</span>
+            <span>Devoluciones proveedor</span>
+          </NavLink>
         </nav>
 
         {/* Footer sidebar */}

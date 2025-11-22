@@ -9,66 +9,9 @@ datasource db {
 
 /**
  * =========================
- * MODELOS EN ESPAÑOL (PPP)
+ * INVENTARIO (PPP)
  * =========================
  */
-
-model Producto {
-  id            Int      @id @default(autoincrement())
-  sku           String   @unique
-  nombre        String
-  marca         String?
-  categoria     String?
-  stock         Int      @default(0)
-  ubicacion     String?
-  codigoBarras  String?  @unique
-  creadoEn      DateTime @default(now())
-  actualizadoEn DateTime @updatedAt
-  ppp           Decimal  @default(0) // Decimal sin @db.* para SQLite
-
-  // Lados opuestos de relaciones
-  ingresoItems     IngresoItem[]
-  stockMovimientos StockMovimiento[]
-  movProyectoItems MovimientoProyectoItem[]
-}
-
-model Ingreso {
-  id          Int      @id @default(autoincrement())
-  fecha       DateTime @default(now())
-  proveedor   String?
-  documento   String?
-  observacion String?
-
-  items IngresoItem[]
-}
-
-model IngresoItem {
-  id            Int       @id @default(autoincrement())
-  ingresoId     Int
-  productoId    Int
-  cantidad      Int
-  costoUnitario Decimal // sin @db.* para SQLite
-  lote          String?
-  venceAt       DateTime?
-
-  ingreso  Ingreso  @relation(fields: [ingresoId], references: [id])
-  producto Producto @relation(fields: [productoId], references: [id])
-}
-
-model StockMovimiento {
-  id            Int            @id @default(autoincrement())
-  productoId    Int
-  tipo          MovimientoTipo
-  cantidad      Int
-  costoUnitario Decimal? // sin @db.*
-  pppAntes      Decimal
-  pppDespues    Decimal
-  refTipo       RefTipo
-  refId         Int?
-  createdAt     DateTime       @default(now())
-
-  producto Producto @relation(fields: [productoId], references: [id])
-}
 
 enum MovimientoTipo {
   IN
@@ -78,61 +21,17 @@ enum MovimientoTipo {
 
 enum RefTipo {
   INGRESO
-  VENTA
+  MOVIMIENTO_PROYECTO_SALIDA
+  MOVIMIENTO_PROYECTO_RETORNO
+  DEVOLUCION_PROVEEDOR
   AJUSTE
-  PROYECTO_SALIDA
-  PROYECTO_RETORNO
 }
 
-/**
- * ===================================
- * MODELOS EN INGLÉS
- * ===================================
- */
-
-enum MovementType {
-  IN
-  OUT
-  ADJUST
-  SET
-}
-
-enum ProductKind {
-  CONSUMABLE
-  TOOL
-  FIXED_ASSET
-}
-
-model Product {
-  id             Int             @id @default(autoincrement())
-  code           String          @unique
-  name           String
-  description    String?
-  unit           String
-  kind           ProductKind     @default(CONSUMABLE)
-  isActive       Boolean         @default(true)
-  minStock       Float?
-  maxStock       Float?
-  categoryId     Int?
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-  stockMovements StockMovement[]
-}
-
-model StockMovement {
-  id        Int          @id @default(autoincrement())
-  productId Int
-  product   Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
-  type      MovementType
-  delta     Int
-  before    Int
-  after     Int
-  reason    String?
-  source    String?
-  actor     String?
-  createdAt DateTime     @default(now())
-
-  @@index([productId, createdAt])
+enum TipoDocumento {
+  FACTURA
+  GUIA_DESPACHO
+  NOTA_CREDITO
+  OTRO
 }
 
 enum ProyectoMovTipo {
@@ -140,18 +39,161 @@ enum ProyectoMovTipo {
   RETORNO
 }
 
+/**
+ * Catálogo de productos
+ */
+
+model Categoria {
+  id            Int           @id @default(autoincrement())
+  codigo        String        @unique  // EXT, DET, ACF, FUN
+  nombre        String        @unique
+  subcategorias Subcategoria[]
+  productos     Producto[]
+}
+
+model Subcategoria {
+  id          Int         @id @default(autoincrement())
+  nombre      String
+  categoriaId Int
+  categoria   Categoria   @relation(fields: [categoriaId], references: [id])
+  productos   Producto[]
+
+  @@unique([categoriaId, nombre])
+}
+
+model Proveedor {
+  id        Int                    @id @default(autoincrement())
+  nombre    String
+  rut       String?                @unique
+  email     String?
+  telefono  String?
+  direccion String?
+  activo    Boolean                @default(true)
+
+  productos             Producto[]
+  ingresos              Ingreso[]
+  devolucionesProveedor DevolucionProveedor[]
+}
+
+model Bodega {
+  id                    Int                    @id @default(autoincrement())
+  nombre                String                 @unique
+  codigo                String?                @unique
+  esPrincipal           Boolean                @default(false)
+  ubicacion             String?
+
+  ingresos              Ingreso[]
+  movimientosProyecto   MovimientoProyecto[]
+  devolucionesProveedor DevolucionProveedor[]
+}
+
+model Proyecto {
+  id          Int                 @id @default(autoincrement())
+  nombre      String              @unique
+  codigo      String?             @unique
+  activo      Boolean             @default(true)
+
+  movimientos MovimientoProyecto[]
+}
+
+model Producto {
+  id                       Int                       @id @default(autoincrement())
+  sku                      String                    @unique
+  nombre                   String
+  descripcion              String?
+  categoriaId              Int
+  categoria                Categoria                 @relation(fields: [categoriaId], references: [id])
+  subcategoriaId           Int?
+  subcategoria             Subcategoria?             @relation(fields: [subcategoriaId], references: [id])
+  proveedorId              Int
+  proveedor                Proveedor                 @relation(fields: [proveedorId], references: [id])
+  stock                    Int                       @default(0)
+  stockMinimo              Int                       @default(0)
+  ubicacion                String?
+  codigoBarras             String?                   @unique
+  imagenUrl                String?
+  creadoEn                 DateTime                  @default(now())
+  actualizadoEn            DateTime                  @updatedAt
+  ppp                      Decimal                   @default(0)
+
+  ingresoItems             IngresoItem[]
+  stockMovimientos         StockMovimiento[]
+  movProyectoItems         MovimientoProyectoItem[]
+  devolucionProveedorItems DevolucionProveedorItem[]
+}
+
+/**
+ * Ingresos de mercadería (compras y carga inicial)
+ */
+
+model Ingreso {
+  id              Int           @id @default(autoincrement())
+  fecha           DateTime      @default(now())
+  proveedorId     Int
+  proveedor       Proveedor     @relation(fields: [proveedorId], references: [id])
+  bodegaId        Int
+  bodega          Bodega        @relation(fields: [bodegaId], references: [id])
+  tipoDocumento   TipoDocumento
+  numeroDocumento String
+  observacion     String?
+
+  items IngresoItem[]
+}
+
+model IngresoItem {
+  id            Int       @id @default(autoincrement())
+  ingresoId     Int
+  productoId    Int
+  cantidad      Int
+  costoUnitario Decimal
+  lote          String?
+  venceAt       DateTime?
+
+  ingreso  Ingreso  @relation(fields: [ingresoId], references: [id])
+  producto Producto @relation(fields: [productoId], references: [id])
+}
+
+/**
+ * Movimientos de stock (log PPP)
+ */
+
+model StockMovimiento {
+  id            Int            @id @default(autoincrement())
+  productoId    Int
+  producto      Producto       @relation(fields: [productoId], references: [id])
+  tipo          MovimientoTipo
+  cantidad      Int
+  costoUnitario Decimal?
+  pppAntes      Decimal
+  pppDespues    Decimal
+  refTipo       RefTipo
+  refId         Int?
+  createdAt     DateTime       @default(now())
+
+  @@index([productoId, createdAt])
+}
+
+/**
+ * Movimientos hacia/desde proyectos (centros de costo)
+ */
+
 model MovimientoProyecto {
-  id          Int                      @id @default(autoincrement())
-  proyecto    String
-  tipo        ProyectoMovTipo
-  fecha       DateTime                 @default(now())
-  documento   String?
-  observacion String?
-  items       MovimientoProyectoItem[]
+  id              Int               @id @default(autoincrement())
+  proyectoId      Int
+  proyecto        Proyecto          @relation(fields: [proyectoId], references: [id])
+  tipo            ProyectoMovTipo
+  fecha           DateTime          @default(now())
+  bodegaId        Int
+  bodega          Bodega            @relation(fields: [bodegaId], references: [id])
+  tipoDocumento   TipoDocumento?
+  numeroDocumento String?
+  observacion     String?
+
+  items MovimientoProyectoItem[]
 }
 
 model MovimientoProyectoItem {
-  id            Int      @id @default(autoincrement())
+  id            Int               @id @default(autoincrement())
   movimientoId  Int
   productoId    Int
   cantidad      Int
@@ -161,13 +203,44 @@ model MovimientoProyectoItem {
   producto   Producto           @relation(fields: [productoId], references: [id])
 }
 
-// --- Enums de roles del sistema y tipo de trabajador ---
+/**
+ * Devoluciones a proveedores (nota de crédito)
+ */
+
+model DevolucionProveedor {
+  id              Int               @id @default(autoincrement())
+  fecha           DateTime          @default(now())
+  proveedorId     Int
+  proveedor       Proveedor         @relation(fields: [proveedorId], references: [id])
+  bodegaId        Int
+  bodega          Bodega            @relation(fields: [bodegaId], references: [id])
+  tipoDocumento   TipoDocumento     @default(NOTA_CREDITO)
+  numeroDocumento String
+  observacion     String?
+
+  items DevolucionProveedorItem[]
+}
+
+model DevolucionProveedorItem {
+  id            Int                @id @default(autoincrement())
+  devolucionId  Int
+  productoId    Int
+  cantidad      Int
+  costoUnitario Decimal?
+
+  devolucion DevolucionProveedor @relation(fields: [devolucionId], references: [id])
+  producto   Producto            @relation(fields: [productoId], references: [id])
+}
+
+/**
+ * Usuarios / autenticación
+ */
 
 enum UserRole {
-  ADMIN // administración de usuarios / configuración
-  WAREHOUSE // bodeguero
-  DRIVER // chofer / despachador
-  SUPERVISOR // opcional: jefes / supervisores
+  ADMIN
+  WAREHOUSE
+  DRIVER
+  SUPERVISOR
 }
 
 enum WorkerType {
@@ -178,58 +251,29 @@ enum WorkerType {
   OTRO
 }
 
-// --- Trabajadores (personas reales) ---
-
 model Worker {
   id        Int        @id @default(autoincrement())
   fullName  String
   rut       String     @unique
-  email     String? // correo de contacto (no necesariamente de login)
+  email     String?
   phone     String?
   type      WorkerType @default(OTRO)
   isActive  Boolean    @default(true)
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 
-  // Relación 1-1 opcional con User
   user User?
 }
 
-// --- Usuarios del sistema (login) ---
-
 model User {
   id           Int      @id @default(autoincrement())
-  email        String   @unique // correo para login (bodeguero1@..., etc.)
+  email        String   @unique
   passwordHash String
   role         UserRole
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  // vínculo opcional a Worker
   workerId Int?    @unique
   worker   Worker? @relation(fields: [workerId], references: [id])
-}
-
-model Categoria {
-  id     Int    @id @default(autoincrement())
-  nombre String @unique
-}
-
-model Marca {
-  id     Int    @id @default(autoincrement())
-  nombre String @unique
-}
-
-model Bodega {
-  id     Int     @id @default(autoincrement())
-  nombre String  @unique
-  codigo String? @unique
-  // más campos: direccion, etc. (si quieres luego)
-}
-
-model Proyecto {
-  id     Int    @id @default(autoincrement())
-  nombre String @unique
-  // etc.
 }
