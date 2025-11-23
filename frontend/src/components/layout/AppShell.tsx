@@ -10,12 +10,16 @@ interface AppShellProps {
 
 export default function AppShell({ children }: AppShellProps) {
   const { user, logout } = useAuth();
+  const [flowsOpen, setFlowsOpen] = React.useState(true); // menú desplegable
 
   const baseLink =
     "group flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition-colors";
   const inactiveLink =
     "text-slate-300 hover:bg-slate-800/60 hover:text-white";
   const activeLink = "bg-slate-100/10 text-white";
+
+  const nestedLink =
+    "group flex items-center gap-2 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors";
 
   return (
     <div className="flex min-h-screen bg-slate-100">
@@ -29,64 +33,126 @@ export default function AppShell({ children }: AppShellProps) {
           <div>
             <div className="text-sm font-semibold">Fire Prevention</div>
             <div className="text-xs text-slate-400">
-              Inventario &amp; PPP
+              Sistema de inventario
             </div>
           </div>
         </div>
 
         {/* Navegación */}
-        <nav className="mt-4 flex-1 space-y-1 px-3">
-          <NavLink
-            to="/"
-            end
-            className={({ isActive }) =>
-              `${baseLink} ${isActive ? activeLink : inactiveLink}`
-            }
-          >
-            <span className="text-base">🏠</span>
-            <span>Panel</span>
-          </NavLink>
+        <nav className="mt-4 flex-1 space-y-4 px-3 pb-4">
+          {/* Sección principal */}
+          <div className="space-y-1">
+            <NavLink
+              to="/"
+              end
+              className={({ isActive }) =>
+                `${baseLink} ${isActive ? activeLink : inactiveLink}`
+              }
+            >
+              <span className="text-base">🏠</span>
+              <span>Panel</span>
+            </NavLink>
 
-          <NavLink
-            to="/productos"
-            className={({ isActive }) =>
-              `${baseLink} ${isActive ? activeLink : inactiveLink}`
-            }
-          >
-            <span className="text-base">📦</span>
-            <span>Inventario</span>
-          </NavLink>
+            <NavLink
+              to="/productos"
+              className={({ isActive }) =>
+                `${baseLink} ${isActive ? activeLink : inactiveLink}`
+              }
+            >
+              <span className="text-base">📦</span>
+              <span>Inventario</span>
+              </NavLink>
+              <NavLink
+                to="/proveedores"
+                className={({ isActive }) =>
+                  `${baseLink} ${isActive ? activeLink : inactiveLink}`
+                }>
+              <span className="text-base">👥</span>
+              <span>Proveedores</span>
+              </NavLink>
 
-          <NavLink
-            to="/ingresos"
-            className={({ isActive }) =>
-              `${baseLink} ${isActive ? activeLink : inactiveLink}`
-            }
-          >
-            <span className="text-base">📥</span>
-            <span>Ingresos</span>
-          </NavLink>
 
-          <NavLink
-            to="/movimientos"
-            className={({ isActive }) =>
-              `${baseLink} ${isActive ? activeLink : inactiveLink}`
-            }
-          >
-            <span className="text-base">📊</span>
-            <span>Movimientos</span>
-          </NavLink>
+            {/* 🔧 Si después quieres más menús “grandes”, agrégalos aquí */}
+            {/*
+            <NavLink
+              to="/reportes"
+              className={({ isActive }) =>
+                `${baseLink} ${isActive ? activeLink : inactiveLink}`
+              }
+            >
+              <span className="text-base">📈</span>
+              <span>Reportes</span>
+            </NavLink>
+            */}
+          </div>
 
-          {/* 🔁 Nuevo menú: Devoluciones a proveedor */}
-          <NavLink
-            to="/devoluciones-proveedor"
-            className={({ isActive }) =>
-              `${baseLink} ${isActive ? activeLink : inactiveLink}`
-            }
-          >
-            <span className="text-base">↩️</span>
-            <span>Devoluciones proveedor</span>
-          </NavLink>
+          {/* Separador visual */}
+          <div className="mx-1 h-px bg-slate-800/70" />
+
+          {/* Grupo desplegable: Ingresos, egresos y devoluciones */}
+          <div className="space-y-1">
+            <button
+              type="button"
+              onClick={() => setFlowsOpen((prev) => !prev)}
+              className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-400 hover:bg-slate-800/70"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-sm">🔁</span>
+                <span>Ingresos, egresos y devoluciones</span>
+              </div>
+              <span
+                className={`text-[10px] transition-transform ${
+                  flowsOpen ? "rotate-90" : ""
+                }`}
+              >
+                ▶
+              </span>
+            </button>
+
+            {flowsOpen && (
+              <div className="mt-1 space-y-1 pl-4">
+                {/* Ingresos de compra */}
+                <NavLink
+                  to="/ingresos"
+                  className={({ isActive }) =>
+                    `${nestedLink} ${
+                      isActive ? activeLink : inactiveLink
+                    }`
+                  }
+                >
+                  <span className="text-sm">📥</span>
+                  <span>Ingresos de compra</span>
+                </NavLink>
+                
+
+                {/* Salidas y retornos de proyecto (egresos) */}
+                <NavLink
+                  to="/movimientos"
+                  className={({ isActive }) =>
+                    `${nestedLink} ${
+                      isActive ? activeLink : inactiveLink
+                    }`
+                  }
+                >
+                  <span className="text-sm">📤</span>
+                  <span>Salidas y retornos de proyecto</span>
+                </NavLink>
+
+                {/* Devoluciones a proveedor */}
+                <NavLink
+                  to="/DevolucionesProveedor"
+                  className={({ isActive }) =>
+                    `${nestedLink} ${
+                      isActive ? activeLink : inactiveLink
+                    }`
+                  }
+                >
+                  <span className="text-sm">↩️</span>
+                  <span>Devoluciones a proveedor</span>
+                </NavLink>
+              </div>
+            )}
+          </div>
         </nav>
 
         {/* Footer sidebar */}
@@ -107,7 +173,7 @@ export default function AppShell({ children }: AppShellProps) {
               Panel de inventario
             </h1>
             <p className="text-xs text-slate-500 md:text-sm">
-              Control de stock, PPP y movimientos.
+              Control de stock, PPP y flujos entre bodegas, proyectos y proveedores.
             </p>
           </div>
 

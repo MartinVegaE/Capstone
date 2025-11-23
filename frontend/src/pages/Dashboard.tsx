@@ -1,308 +1,205 @@
 // src/pages/Dashboard.tsx
-import React, { useState, type FormEvent } from "react";
-import {
-  useCategorias,
-  useCreateCategoria,
-  useMarcas,
-  useCreateMarca,
-  useBodegas,
-  useCreateBodega,
-  useProyectos,
-  useCreateProyecto,
-} from "../api/catalogs";
-import Button from "../components/ui/Button";
+import React from "react";
+import { Link } from "react-router-dom";
 
 export default function DashboardPage() {
+  const now = new Date();
+  const hour = now.getHours();
+
+
+  const today = new Intl.DateTimeFormat("es-CL", {
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  }).format(now);
+
   return (
     <section className="w-full px-6 pb-6">
-      <h1 className="mb-1 text-2xl font-semibold text-slate-900">
-        Panel principal
-      </h1>
-      <p className="mb-6 text-sm text-slate-600 max-w-2xl">
-        Administra los catálogos básicos que luego usarás en productos,
-        ingresos y movimientos: categorías, marcas, bodegas y proyectos.
-      </p>
+      {/* Encabezado */}
+      <header className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-[0.18em] text-rose-500">
+            Fire Prevention · Inventario
+          </p>
+          
+          <p className="mt-2 max-w-2xl text-sm text-slate-600">
+            Revisa de un vistazo el estado del inventario, registra movimientos
+            críticos y navega rápidamente a los módulos de trabajo diario:
+            productos, proyectos, proveedores y devoluciones.
+          </p>
+        </div>
 
-      <div className="grid gap-6 md:grid-cols-2">
-        <CategoriasCard />
-        <MarcasCard />
-        <BodegasCard />
-        <ProyectosCard />
+        <div className="flex flex-col items-start gap-2 text-xs sm:items-end">
+          <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-3 py-1 shadow-sm backdrop-blur">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+            <span className="font-medium text-slate-700">
+              Sistema operativo
+            </span>
+            <span className="text-slate-400">·</span>
+            <span className="text-slate-500 capitalize">{today}</span>
+          </div>
+          <p className="text-[11px] text-slate-500">
+            Tip: puedes volver aquí en cualquier momento desde el menú lateral.
+          </p>
+        </div>
+      </header>
+
+      {/* Tarjetas principales */}
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+        <DashboardCard
+          accent="indigo"
+          icon="📦"
+          title="Inventario de productos"
+          description="Mantén el catálogo al día, controla stock mínimo y revisa movimientos de entrada y salida."
+          primaryLink={{ to: "/productos", label: "Ir a productos" }}
+          secondaryLinks={[
+            { to: "/movimientos", label: "Movimientos de stock" },
+            { to: "/ingresos", label: "Ingresos de mercadería" },
+          ]}
+          chips={["SKUs críticos", "Stock mínimo", "Lotes en tránsito"]}
+        />
+
+        <DashboardCard
+          accent="emerald"
+          icon="🏗️"
+          title="Proyectos y obras"
+          description="Gestiona las salidas hacia obra y los retornos al inventario para mantener trazabilidad por proyecto."
+          primaryLink={{
+            to: "/proyectos/salidas",
+            label: "Salidas a proyectos",
+          }}
+          secondaryLinks={[
+            { to: "/proyectos/retornos", label: "Retornos de proyectos" },
+          ]}
+          chips={["Material en obra", "Devoluciones pendientes"]}
+        />
+
+        <DashboardCard
+          accent="rose"
+          icon="🤝"
+          title="Proveedores y devoluciones"
+          description="Administra el maestro de proveedores y registra devoluciones de materiales hacia ellos."
+          primaryLink={{ to: "/proveedores", label: "Ver proveedores" }}
+          secondaryLinks={[
+            {
+              to: "/devoluciones/proveedor",
+              label: "Devoluciones a proveedor",
+            },
+          ]}
+          chips={["OC abiertas", "Garantías", "Material defectuoso"]}
+        />
       </div>
     </section>
   );
 }
 
-// --------- Cards específicas ---------
+type Accent = "indigo" | "emerald" | "rose";
 
-function CategoriasCard() {
-  const { data, isLoading, isError } = useCategorias();
-  const createMut = useCreateCategoria();
-  const [nombre, setNombre] = useState("");
-
-  function onSubmit(e: FormEvent) {
-    e.preventDefault();
-    const n = nombre.trim();
-    if (!n) return;
-    createMut.mutate(n, {
-      onSuccess: () => setNombre(""),
-      onError: () => alert("No se pudo crear la categoría"),
-    });
-  }
-
-  return (
-    <Card
-      title="Categorías"
-      subtitle="Ejemplo: Extintores, Mangueras, EPP, Herramientas, etc."
-    >
-      <form
-        onSubmit={onSubmit}
-        className="mb-3 flex gap-2 text-sm"
-      >
-        <input
-          className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm"
-          placeholder="Nombre de categoría"
-          value={nombre}
-          onChange={(e) => setNombre(e.target.value)}
-        />
-        <Button
-          type="submit"
-          disabled={createMut.isPending}
-        >
-          Agregar
-        </Button>
-      </form>
-
-      <CatalogList
-        isLoading={isLoading}
-        isError={isError}
-        items={data?.map((c) => c.nombre) ?? []}
-        emptyText="No hay categorías registradas."
-      />
-    </Card>
-  );
-}
-
-function MarcasCard() {
-  const { data, isLoading, isError } = useMarcas();
-  const createMut = useCreateMarca();
-  const [nombre, setNombre] = useState("");
-
-  function onSubmit(e: FormEvent) {
-    e.preventDefault();
-    const n = nombre.trim();
-    if (!n) return;
-    createMut.mutate(n, {
-      onSuccess: () => setNombre(""),
-      onError: () => alert("No se pudo crear la marca"),
-    });
-  }
-
-  return (
-    <Card
-      title="Marcas"
-      subtitle="Ejemplo: Kidde, Dräger, Honeywell, etc."
-    >
-      <form
-        onSubmit={onSubmit}
-        className="mb-3 flex gap-2 text-sm"
-      >
-        <input
-          className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm"
-          placeholder="Nombre de marca"
-          value={nombre}
-          onChange={(e) => setNombre(e.target.value)}
-        />
-        <Button
-          type="submit"
-          disabled={createMut.isPending}
-        >
-          Agregar
-        </Button>
-      </form>
-
-      <CatalogList
-        isLoading={isLoading}
-        isError={isError}
-        items={data?.map((m) => m.nombre) ?? []}
-        emptyText="No hay marcas registradas."
-      />
-    </Card>
-  );
-}
-
-function BodegasCard() {
-  const { data, isLoading, isError } = useBodegas();
-  const createMut = useCreateBodega();
-  const [nombre, setNombre] = useState("");
-  const [codigo, setCodigo] = useState("");
-
-  function onSubmit(e: FormEvent) {
-    e.preventDefault();
-    const n = nombre.trim();
-    const c = codigo.trim();
-    if (!n) return;
-    createMut.mutate(
-      { nombre: n, codigo: c || undefined },
-      {
-        onSuccess: () => {
-          setNombre("");
-          setCodigo("");
-        },
-        onError: () => alert("No se pudo crear la bodega"),
-      }
-    );
-  }
-
-  return (
-    <Card
-      title="Bodegas"
-      subtitle="Se usan para separar stock por ubicación física (ej: Bodega 1, Camión 3, etc.)."
-    >
-      <form
-        onSubmit={onSubmit}
-        className="mb-3 flex gap-2 text-sm"
-      >
-        <input
-          className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm"
-          placeholder="Bodega 1"
-          value={nombre}
-          onChange={(e) => setNombre(e.target.value)}
-        />
-        <input
-          className="w-40 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
-          placeholder="Código (opcional)"
-          value={codigo}
-          onChange={(e) => setCodigo(e.target.value)}
-        />
-        <Button
-          type="submit"
-          disabled={createMut.isPending}
-        >
-          Agregar
-        </Button>
-      </form>
-
-      <CatalogList
-        isLoading={isLoading}
-        isError={isError}
-        items={
-          data?.map((b) =>
-            b.codigo ? `${b.nombre} · ${b.codigo}` : b.nombre
-          ) ?? []
-        }
-        emptyText="No hay bodegas registradas."
-      />
-    </Card>
-  );
-}
-
-function ProyectosCard() {
-  const { data, isLoading, isError } = useProyectos();
-  const createMut = useCreateProyecto();
-  const [nombre, setNombre] = useState("");
-
-  function onSubmit(e: FormEvent) {
-    e.preventDefault();
-    const n = nombre.trim();
-    if (!n) return;
-    createMut.mutate(n, {
-      onSuccess: () => setNombre(""),
-      onError: () => alert("No se pudo crear el proyecto"),
-    });
-  }
-
-  return (
-    <Card
-      title="Proyectos"
-      subtitle="Proyectos u obras a las que se imputan las salidas y retornos de materiales."
-    >
-      <form
-        onSubmit={onSubmit}
-        className="mb-3 flex gap-2 text-sm"
-      >
-        <input
-          className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm"
-          placeholder="Nombre de proyecto"
-          value={nombre}
-          onChange={(e) => setNombre(e.target.value)}
-        />
-        <Button
-          type="submit"
-          disabled={createMut.isPending}
-        >
-          Agregar
-        </Button>
-      </form>
-
-      <CatalogList
-        isLoading={isLoading}
-        isError={isError}
-        items={data?.map((p) => p.nombre) ?? []}
-        emptyText="No hay proyectos registrados."
-      />
-    </Card>
-  );
-}
-
-// --------- Componentes pequeños de apoyo ---------
-
-function Card({
-  title,
-  subtitle,
-  children,
-}: {
+type DashboardCardProps = {
+  accent: Accent;
+  icon: string;
   title: string;
-  subtitle?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-      <h2 className="text-base font-semibold text-slate-900">{title}</h2>
-      {subtitle && (
-        <p className="mt-1 text-xs text-slate-500">{subtitle}</p>
-      )}
-      <div className="mt-3">{children}</div>
-    </section>
-  );
-}
+  description: string;
+  primaryLink: { to: string; label: string };
+  secondaryLinks?: { to: string; label: string }[];
+  chips?: string[];
+};
 
-function CatalogList({
-  isLoading,
-  isError,
-  items,
-  emptyText,
-}: {
-  isLoading: boolean;
-  isError: boolean;
-  items: string[];
-  emptyText: string;
-}) {
-  if (isLoading) {
-    return (
-      <div className="mt-2 h-4 w-1/2 animate-pulse rounded bg-slate-200" />
-    );
+const accentStyles: Record<
+  Accent,
+  {
+    card: string;
+    badge: string;
+    button: string;
+    buttonHover: string;
   }
-  if (isError) {
-    return (
-      <p className="mt-2 text-xs text-red-600">
-        Error al cargar datos
-      </p>
-    );
-  }
-  if (items.length === 0) {
-    return (
-      <p className="mt-2 text-xs text-slate-500">{emptyText}</p>
-    );
-  }
+> = {
+  indigo: {
+    card:
+      "border-indigo-100 bg-gradient-to-br from-indigo-50 via-white to-slate-50",
+    badge: "bg-indigo-100 text-indigo-700",
+    button: "bg-indigo-600",
+    buttonHover: "hover:bg-indigo-700",
+  },
+  emerald: {
+    card:
+      "border-emerald-100 bg-gradient-to-br from-emerald-50 via-white to-slate-50",
+    badge: "bg-emerald-100 text-emerald-700",
+    button: "bg-emerald-600",
+    buttonHover: "hover:bg-emerald-700",
+  },
+  rose: {
+    card:
+      "border-rose-100 bg-gradient-to-br from-rose-50 via-white to-slate-50",
+    badge: "bg-rose-100 text-rose-700",
+    button: "bg-rose-500",
+    buttonHover: "hover:bg-rose-600",
+  },
+};
+
+function DashboardCard({
+  accent,
+  icon,
+  title,
+  description,
+  primaryLink,
+  secondaryLinks = [],
+  chips = [],
+}: DashboardCardProps) {
+  const styles = accentStyles[accent];
+
   return (
-    <ul className="mt-2 space-y-1 text-xs text-slate-700">
-      {items.map((it) => (
-        <li key={it} className="flex items-center gap-2">
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-indigo-500" />
-          <span>{it}</span>
-        </li>
-      ))}
-    </ul>
+    <section
+      className={`flex h-full flex-col rounded-2xl border p-5 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md ${styles.card}`}
+    >
+      <div className="flex-1">
+        <div className="mb-3 flex items-center gap-3">
+          <div
+            className={`flex h-9 w-9 items-center justify-center rounded-2xl text-lg shadow-sm ${styles.badge}`}
+          >
+            <span aria-hidden>{icon}</span>
+          </div>
+          <h2 className="text-base font-semibold text-slate-900">{title}</h2>
+        </div>
+        <p className="text-sm text-slate-600">{description}</p>
+
+        {chips.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {chips.map((chip) => (
+              <span
+                key={chip}
+                className="rounded-full bg-white/70 px-2.5 py-0.5 text-[11px] font-medium text-slate-600 shadow-sm"
+              >
+                {chip}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 space-y-2">
+        <Link
+          to={primaryLink.to}
+          className={`inline-flex w-full justify-center rounded-xl px-3 py-2 text-sm font-medium text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-900 ${styles.button} ${styles.buttonHover}`}
+        >
+          {primaryLink.label}
+        </Link>
+
+        {secondaryLinks.length > 0 && (
+          <div className="flex flex-wrap gap-2 text-xs">
+            {secondaryLinks.map((link) => (
+              <Link
+                key={link.to}
+                to={link.to}
+                className="rounded-full border border-slate-200 bg-white/70 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                {link.label}
+              </Link>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
   );
 }

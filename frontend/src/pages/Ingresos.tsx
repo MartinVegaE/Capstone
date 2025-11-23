@@ -1,347 +1,897 @@
+// src/pages/Ingresos.tsx
 import React, { useMemo, useState } from "react";
-import {
-  useIngresos,
-  useCreateIngreso,
-  useUpdateIngreso,
-  type Ingreso,
-  type IngresoItem,
-  type IngresoEstado,
-} from "../api/ingresos";
-import ControlPanel, { type ViewMode } from "../components/layout/ControlPanel";
-import KanbanBoard from "../components/views/KanbanBoard";
-import Button from "../components/ui/Button";
-import Badge from "../components/ui/Badge";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-function fmt(dt: string) {
-  try { return new Date(dt).toLocaleString(); } catch { return dt; }
-}
-function estadoTone(e: IngresoEstado) {
-  if (e === "Confirmado") return "success" as const;
-  if (e === "Anulado") return "danger" as const;
-  return "warning" as const; // Borrador
+const API_URL = "http://localhost:4000";
+
+/* =========================
+   Tipos
+   ========================= */
+
+type IngresoItemFromApi = {
+  sku: string;
+  cantidad: number;
+  costo?: number;
+};
+
+type IngresoFromApi = {
+  id: number;
+  proveedor: string;
+  documento: string;
+  observacion: string;
+  fecha: string; // ISO
+  estado: string;
+  items: IngresoItemFromApi[];
+};
+
+type IngresosResponse = {
+  data: IngresoFromApi[];
+  total: number;
+};
+
+type Proveedor = {
+  id: number;
+  nombre: string;
+  rut: string | null;
+  email: string | null;
+  telefono: string | null;
+  activo: boolean;
+};
+
+type Bodega = {
+  id: number;
+  nombre: string;
+  codigo: string | null;
+};
+
+type CategoriaCodigo = "EXT" | "DET" | "ACF" | "FUN";
+
+type ItemDraft = {
+  id: string;
+  sku: string;
+  nombre: string;
+  categoriaCodigo: CategoriaCodigo | "";
+  subcategoriaNombre: string;
+  cantidad: string;
+  costoUnitario: string;
+  stockMinimo: string;
+};
+
+/* =========================
+   Constantes
+   ========================= */
+
+const CATEGORIAS: { value: CategoriaCodigo; label: string }[] = [
+  { value: "EXT", label: "EXT · Extinción" },
+  { value: "DET", label: "DET · Detección" },
+  { value: "ACF", label: "ACF · Accesorios fijos" },
+  { value: "FUN", label: "FUN · Funcionales" },
+];
+
+const SUBCATEGORIAS_POR_CATEGORIA: Record<
+  CategoriaCodigo,
+  string[]
+> = {
+  EXT: ["Extintores", "Sistemas fijos", "Hidrantes"],
+  DET: ["Detectores de humo", "Detectores de calor", "Paneles"],
+  ACF: ["Gabinetes", "Soportes", "Anclajes"],
+  FUN: ["Mangueras", "Boquillas", "Llaves"],
+};
+
+const TIPO_DOC_OPCIONES: { value: string; label: string }[] = [
+  { value: "FACTURA", label: "Factura" },
+  { value: "GUIA", label: "Guía de despacho" },
+  { value: "NC", label: "Nota de crédito" },
+];
+
+/* =========================
+   Helpers UI
+   ========================= */
+
+function formatDateShort(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("es-CL", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+  });
 }
 
-/** Drawer simple */
-function Drawer({ open, onClose, children, title }: {
-  open: boolean; onClose: () => void; children: React.ReactNode; title?: string;
-}) {
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-50">
-      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
-      <aside className="absolute right-0 top-0 h-full w-full max-w-2xl overflow-y-auto border-l border-slate-200 bg-white shadow-2xl">
-        <div className="flex items-center justify-between border-b px-5 py-4">
-          <h3 className="text-lg font-semibold">{title ?? "Ingreso"}</h3>
-          <button onClick={onClose} className="rounded-full p-1 hover:bg-slate-100">✕</button>
-        </div>
-        <div className="p-5">{children}</div>
-      </aside>
-    </div>
-  );
+function calcTotal(items: IngresoItemFromApi[]): number {
+  return items.reduce((acc, it) => {
+    const c = it.costo ?? 0;
+    return acc + it.cantidad * c;
+  }, 0);
 }
+
+function money(n: number) {
+  return n.toLocaleString("es-CL", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  });
+}
+
+/* =========================
+   Hooks de datos
+   ========================= */
+
+async function fetchIngresos(): Promise<IngresosResponse> {
+  const url = new URL("/ingresos", API_URL);
+  url.searchParams.set("page", "1");
+  url.searchParams.set("pageSize", "20");
+  const res = await fetch(url.toString());
+  if (!res.ok) {
+    throw new Error("Error cargando ingresos");
+  }
+  return res.json();
+}
+
+async function fetchProveedores(search: string): Promise<Proveedor[]> {
+  const url = new URL("/proveedores", API_URL);
+  url.searchParams.set("incluirInactivos", "0");
+  if (search.trim()) {
+    url.searchParams.set("q", search.trim());
+  }
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error("Error cargando proveedores");
+  return res.json();
+}
+
+async function fetchBodegaPrincipal(): Promise<Bodega | null> {
+  const res = await fetch(`${API_URL}/bodegas`);
+  if (!res.ok) throw new Error("Error cargando bodegas");
+  const bodegas: Bodega[] = await res.json();
+  const principal =
+    bodegas.find((b) => b.codigo === "BODEGA_INICIAL") ||
+    bodegas.find((b) => (b as any).esPrincipal) ||
+    bodegas[0] ||
+    null;
+  return principal;
+}
+
+/* =========================
+   Página
+   ========================= */
 
 export default function IngresosPage() {
-  const [q, setQ] = useState("");
-  const [view, setView] = useState<ViewMode>("list");
-  const [page, setPage] = useState(1);
-  const pageSize = 10;
+  const queryClient = useQueryClient();
+  const [nuevoAbierto, setNuevoAbierto] = useState(false);
 
-  const [proveedor, setProveedor] = useState("");
-  const [estado, setEstado] = useState<IngresoEstado | "">("");
-
-  const { data, isLoading, isError, refetch } = useIngresos({
-    q, proveedor: proveedor || undefined, estado: estado || "", page, pageSize,
+  // Listado de ingresos
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["ingresos"],
+    queryFn: fetchIngresos,
   });
-  const total = data?.total ?? 0;
-  const rows = data?.data ?? [];
-  const totalPages = useMemo(() => Math.max(1, Math.ceil(total / pageSize)), [total, pageSize]);
 
-  const proveedoresOptions = useMemo(
-    () => Array.from(new Set(rows.map((r) => r.proveedor).filter(Boolean))).sort(), [rows]
-  );
+  // Datos del drawer
+  const [tipoDocumento, setTipoDocumento] = useState("FACTURA");
+  const [numeroDocumento, setNumeroDocumento] = useState("");
+  const [observacion, setObservacion] = useState("");
 
-  const [editing, setEditing] = useState<Ingreso | null>(null);
-  const [isNew, setIsNew] = useState(false);
-  const createMut = useCreateIngreso();
-  const updateMut = useUpdateIngreso(editing?.id ?? 0);
+  const [items, setItems] = useState<ItemDraft[]>([
+    {
+      id: "item-1",
+      sku: "",
+      nombre: "",
+      categoriaCodigo: "",
+      subcategoriaNombre: "",
+      cantidad: "",
+      costoUnitario: "",
+      stockMinimo: "",
+    },
+  ]);
 
-  const openCreate = () => { setIsNew(true); setEditing(null); };
-  const openEdit = (ing: Ingreso) => { setIsNew(false); setEditing(ing); };
-  const closeDrawer = () => { setIsNew(false); setEditing(null); };
+  // Proveedor combo
+  const [proveedorSearch, setProveedorSearch] = useState("");
+  const [selectedProveedor, setSelectedProveedor] =
+    useState<Proveedor | null>(null);
 
-  const [items, setItems] = useState<IngresoItem[]>([]);
-  React.useEffect(() => {
-    if (isNew) setItems([{ sku: "", cantidad: 1, costo: 0 }]);
-    else if (editing) setItems(editing.items ?? []);
-    else setItems([]);
-  }, [isNew, editing]);
+  const { data: proveedoresData } = useQuery({
+    queryKey: ["proveedores", proveedorSearch],
+    queryFn: () => fetchProveedores(proveedorSearch),
+    enabled: proveedorSearch.trim().length > 0 && nuevoAbierto,
+  });
 
-  const addItem = () => setItems((prev) => [...prev, { sku: "", cantidad: 1, costo: 0 }]);
-  const rmItem = (idx: number) => setItems((prev) => prev.filter((_, i) => i !== idx));
-  const patchItem = (idx: number, patch: Partial<IngresoItem>) =>
-    setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
+  const proveedores = proveedoresData ?? [];
 
-  const totalItems = useMemo(
-    () => items.reduce((acc, it) => acc + (Number(it.costo ?? 0) * Number(it.cantidad ?? 0)), 0),
-    [items]
-  );
+  // Bodega principal
+  const { data: bodegaPrincipal } = useQuery({
+    queryKey: ["bodega-principal"],
+    queryFn: fetchBodegaPrincipal,
+    enabled: nuevoAbierto,
+  });
 
-  const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const fd = new FormData(e.currentTarget);
-    const dto = {
-      proveedor: String(fd.get("proveedor") || ""),
-      documento: String(fd.get("documento") || ""),
-      fecha: String(fd.get("fecha") || new Date().toISOString()),
-      estado: String(fd.get("estado") || "Borrador") as IngresoEstado,
-      items: items.filter((it) => it.sku && Number(it.cantidad) > 0).map((it) => ({
-        sku: String(it.sku), cantidad: Number(it.cantidad), costo: it.costo != null ? Number(it.costo) : undefined,
-      })),
-    } as Partial<Ingreso>;
+  /* ========== Mutación: crear ingreso ========== */
 
-    if (!dto.proveedor) return alert("Proveedor es obligatorio");
-    if (!dto.items || dto.items.length === 0) return alert("Agrega al menos un ítem");
+  const crearIngresoMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedProveedor) {
+        throw new Error("Debes seleccionar un proveedor.");
+      }
 
-    if (isNew) {
-      createMut.mutate(dto, { onSuccess: () => { closeDrawer(); refetch(); }, onError: () => alert("No se pudo crear") });
-    } else {
-      if (!editing) return;
-      updateMut.mutate(dto, { onSuccess: () => { closeDrawer(); refetch(); }, onError: () => alert("No se pudo guardar") });
-    }
-  };
+      const cleanedItems = items
+        .map((it) => ({
+          ...it,
+          cantidadNum: Number(it.cantidad),
+          costoNum: Number(it.costoUnitario),
+          stockMinNum: it.stockMinimo
+            ? Number(it.stockMinimo)
+            : undefined,
+        }))
+        .filter(
+          (it) =>
+            it.sku.trim() &&
+            it.nombre.trim() &&
+            Number.isFinite(it.cantidadNum) &&
+            it.cantidadNum > 0 &&
+            Number.isFinite(it.costoNum) &&
+            it.costoNum >= 0
+        );
 
-  const columns = useMemo<IngresoEstado[]>(() => ["Borrador", "Confirmado", "Anulado"], []);
-  const columnOf = (ing: Ingreso) => ing.estado;
-  const renderCard = (ing: Ingreso) => (
-    <div>
-      <div className="mb-1 flex items-center justify-between">
-        <div className="text-sm font-semibold text-slate-800">{ing.proveedor}</div>
-        <span className="rounded bg-slate-100 px-2 py-0.5 text-xs">{fmt(ing.fecha)}</span>
-      </div>
-      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-        {ing.documento && <span className="rounded bg-slate-100 px-2 py-0.5">Doc: {ing.documento}</span>}
-        <span className="rounded bg-emerald-50 px-2 py-0.5 text-emerald-700">Ítems: {ing.items?.length ?? 0}</span>
-        <Badge tone={estadoTone(ing.estado)}> {ing.estado} </Badge>
-      </div>
-    </div>
-  );
+      if (cleanedItems.length === 0) {
+        throw new Error(
+          "Debes agregar al menos un ítem válido (SKU, nombre, cantidad y costo)."
+        );
+      }
+
+      const payload = {
+        tipoDocumento,
+        numeroDocumento:
+          numeroDocumento.trim() || null,
+        observacion:
+          observacion.trim() || null,
+        proveedorId: selectedProveedor.id,
+        items: cleanedItems.map((it) => ({
+          sku: it.sku.trim(),
+          nombre: it.nombre.trim(),
+          categoriaCodigo: it.categoriaCodigo || undefined,
+          subcategoriaNombre:
+            it.subcategoriaNombre.trim() || undefined,
+          cantidad: it.cantidadNum,
+          costoUnitario: it.costoNum,
+          stockMinimo: it.stockMinNum,
+        })),
+      };
+
+      const res = await fetch(`${API_URL}/ingresos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.ok === false) {
+        throw new Error(
+          json.error || "Error creando ingreso de compra"
+        );
+      }
+
+      return json;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["ingresos"] });
+      resetForm();
+      setNuevoAbierto(false);
+    },
+  });
+
+  function resetForm() {
+    setTipoDocumento("FACTURA");
+    setNumeroDocumento("");
+    setObservacion("");
+    setItems([
+      {
+        id: "item-1",
+        sku: "",
+        nombre: "",
+        categoriaCodigo: "",
+        subcategoriaNombre: "",
+        cantidad: "",
+        costoUnitario: "",
+        stockMinimo: "",
+      },
+    ]);
+    setProveedorSearch("");
+    setSelectedProveedor(null);
+  }
+
+  /* ========== Handlers items ========== */
+
+  function handleItemChange(
+    id: string,
+    field: keyof ItemDraft,
+    value: string
+  ) {
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === id ? { ...it, [field]: value } : it
+      )
+    );
+  }
+
+  function handleCategoriaChange(id: string, value: string) {
+    const val = value as CategoriaCodigo | "";
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.id !== id) return it;
+        // Autocompletar SKU con el código de categoría
+        const newSku =
+          it.sku.trim() === "" ||
+          (it.categoriaCodigo &&
+            CATEGORIAS.map((c) => c.value).includes(
+              it.sku as CategoriaCodigo
+            ))
+            ? val || ""
+            : it.sku;
+        return {
+          ...it,
+          categoriaCodigo: val,
+          sku: newSku,
+          subcategoriaNombre:
+            it.subcategoriaNombre &&
+            SUBCATEGORIAS_POR_CATEGORIA[val as CategoriaCodigo]
+              ?.includes(it.subcategoriaNombre)
+              ? it.subcategoriaNombre
+              : "",
+        };
+      })
+    );
+  }
+
+  function handleAgregarItem() {
+    setItems((prev) => [
+      ...prev,
+      {
+        id: `item-${prev.length + 1}-${Date.now()}`,
+        sku: "",
+        nombre: "",
+        categoriaCodigo: "",
+        subcategoriaNombre: "",
+        cantidad: "",
+        costoUnitario: "",
+        stockMinimo: "",
+      },
+    ]);
+  }
+
+  function handleEliminarItem(id: string) {
+    setItems((prev) =>
+      prev.length > 1 ? prev.filter((it) => it.id !== id) : prev
+    );
+  }
+
+  /* ========== Render ========== */
+
+  const ingresos = data?.data ?? [];
+
+  const hayProveedoresSugeridos =
+    proveedorSearch.trim().length > 0 &&
+    proveedores.length > 0;
 
   return (
-    <section className="w-full px-6 pb-6">
-      <h2 className="sr-only">Ingresos</h2>
-
-      <ControlPanel search={q} onSearch={(v) => { setQ(v); setPage(1); }} view={view} onChangeView={setView} />
-
-      {/* Filtros */}
-      <div className="w-full px-6 pt-3">
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <select
-            value={proveedor}
-            onChange={(e) => { setProveedor(e.target.value); setPage(1); }}
-            className="rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm"
-            aria-label="Filtrar por proveedor"
-          >
-            <option value="">Proveedor (todos)</option>
-            {proveedoresOptions.map((p) => (<option key={p} value={p}>{p}</option>))}
-          </select>
-
-          <select
-            value={estado}
-            onChange={(e) => { setEstado(e.target.value as IngresoEstado | ""); setPage(1); }}
-            className="rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm"
-            aria-label="Filtrar por estado"
-          >
-            <option value="">Estado (todos)</option>
-            <option value="Borrador">Borrador</option>
-            <option value="Confirmado">Confirmado</option>
-            <option value="Anulado">Anulado</option>
-          </select>
-
-          <div className="ml-auto flex items-center gap-2">
-            <Button variant="primary" onClick={openCreate}>Nuevo ingreso</Button>
-            {(proveedor || estado) && (
-              <Button variant="secondary" onClick={() => { setProveedor(""); setEstado(""); setPage(1); }}>
-                Limpiar filtros
-              </Button>
-            )}
-          </div>
+    <div className="space-y-4">
+      {/* Header de la página */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900">
+            Ingresos de compra
+          </h2>
+          <p className="text-sm text-slate-500">
+            Registra compras a proveedores y actualiza el PPP de
+            los productos.
+          </p>
         </div>
+        <button
+          type="button"
+          onClick={() => {
+            resetForm();
+            setNuevoAbierto(true);
+          }}
+          className="inline-flex items-center justify-center rounded-xl bg-sky-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-sky-700"
+        >
+          + Nuevo ingreso
+        </button>
       </div>
 
-      {/* Contenido */}
-      {view === "kanban" ? (
-        <>
-          {isLoading && <div className="w-full px-6 py-6"><div className="animate-pulse h-4 w-1/2 rounded bg-slate-200" /></div>}
-          {isError && (
-            <div className="w-full px-6 py-6 text-red-700">
-              Error al cargar ingresos. <Button size="sm" onClick={() => refetch()}>Reintentar</Button>
-            </div>
-          )}
-          {!isLoading && !isError && (
-            <KanbanBoard<Ingreso>
-              columns={columns}
-              items={rows}
-              columnOf={columnOf}
-              renderCard={renderCard}
-              onOpen={(ing) => openEdit(ing)}
-              emptyText="Sin ingresos en esta columna"
-            />
-          )}
-        </>
-      ) : (
-        <>
-          <div className="mx-6 overflow-hidden rounded-2xl border border-slate-200 bg-white">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-slate-600">
-                <tr>
-                  <th className="px-4 py-3 text-left">Fecha</th>
-                  <th className="px-4 py-3 text-left">Proveedor</th>
-                  <th className="px-4 py-3 text-left">Documento</th>
-                  <th className="px-4 py-3 text-left">Estado</th>
-                  <th className="px-4 py-3 text-left">Ítems</th>
-                  <th className="px-4 py-3 text-left">Total aprox.</th>
-                  <th className="px-4 py-3"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {isLoading && (
-                  <tr><td colSpan={7} className="px-4 py-6"><div className="animate-pulse h-4 w-1/2 rounded bg-slate-200" /></td></tr>
-                )}
-                {isError && (
-                  <tr><td colSpan={7} className="px-4 py-6 text-red-700">
-                    Error al cargar ingresos. <Button size="sm" onClick={() => refetch()}>Reintentar</Button>
-                  </td></tr>
-                )}
-                {!isLoading && !isError && rows.length === 0 && (
-                  <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-500">No hay ingresos para mostrar.</td></tr>
-                )}
-                {!isLoading && !isError && rows.map((ing) => {
-                  const subtotal = (ing.items ?? []).reduce((acc, it) => acc + (Number(it.costo ?? 0) * Number(it.cantidad ?? 0)), 0);
-                  return (
-                    <tr key={ing.id} className="border-t hover:bg-slate-50/60">
-                      <td className="px-4 py-3">{fmt(ing.fecha)}</td>
-                      <td className="px-4 py-3">{ing.proveedor}</td>
-                      <td className="px-4 py-3">{ing.documento ?? ""}</td>
-                      <td className="px-4 py-3"><Badge tone={estadoTone(ing.estado)}>{ing.estado}</Badge></td>
-                      <td className="px-4 py-3">{ing.items?.length ?? 0}</td>
-                      <td className="px-4 py-3">${subtotal.toLocaleString()}</td>
-                      <td className="px-4 py-3 text-right">
-                        <Button size="sm" onClick={() => openEdit(ing)}>Editar</Button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+      {/* Tabla de ingresos */}
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-100 px-4 py-2 text-xs font-medium uppercase tracking-wide text-slate-500">
+          Últimos ingresos
+        </div>
+
+        {isLoading && (
+          <div className="p-4 text-sm text-slate-500">
+            Cargando ingresos...
           </div>
+        )}
 
-          {!isLoading && !isError && totalPages > 1 && (
-            <div className="mx-6 mt-3 flex items-center justify-between text-sm text-slate-600">
-              <span> Página {page} de {totalPages} · {total} resultados </span>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={page === 1}
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                >
-                  ← Anterior
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={page === totalPages}
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                >
-                  Siguiente →
-                </Button>
-              </div>
-            </div>
-          )}
-        </>
-      )}
-
-      {/* Drawer crear/editar ingreso */}
-      <Drawer
-        open={isNew || editing !== null}
-        onClose={closeDrawer}
-        title={isNew ? "Nuevo ingreso" : editing ? `Editar ingreso (#${editing.id})` : "Ingreso"}
-      >
-        <form onSubmit={onSubmit} className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="mb-1 block text-sm text-slate-600">Proveedor</label>
-              <input name="proveedor" defaultValue={editing?.proveedor ?? ""} required
-                     className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm" />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-slate-600">Documento</label>
-              <input name="documento" defaultValue={editing?.documento ?? ""}
-                     className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm" />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-slate-600">Fecha</label>
-              <input name="fecha" type="datetime-local"
-                     defaultValue={editing ? new Date(editing.fecha).toISOString().slice(0,16) : new Date().toISOString().slice(0,16)}
-                     className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm" />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-slate-600">Estado</label>
-              <select name="estado" defaultValue={editing?.estado ?? "Borrador"}
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm">
-                <option value="Borrador">Borrador</option>
-                <option value="Confirmado">Confirmado</option>
-                <option value="Anulado">Anulado</option>
-              </select>
-            </div>
+        {isError && !isLoading && (
+          <div className="p-4 text-sm text-red-600">
+            Error cargando ingresos.
           </div>
+        )}
 
-          <div>
-            <div className="mb-2 text-sm font-medium text-slate-700">Ítems</div>
-            <div className="space-y-2">
-              {items.map((it, idx) => (
-                <div key={idx} className="grid grid-cols-6 gap-2">
-                  <input
-                    placeholder="SKU"
-                    value={it.sku}
-                    onChange={(e) => patchItem(idx, { sku: e.target.value })}
-                    className="col-span-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm font-mono"
-                  />
-                  <input
-                    placeholder="Cantidad"
-                    type="number" min={1}
-                    value={Number(it.cantidad ?? 1)}
-                    onChange={(e) => patchItem(idx, { cantidad: Number(e.target.value) })}
-                    className="col-span-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
-                  />
-                  <input
-                    placeholder="Costo (opcional)"
-                    type="number" min={0}
-                    value={Number(it.costo ?? 0)}
-                    onChange={(e) => patchItem(idx, { costo: Number(e.target.value) })}
-                    className="col-span-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
-                  />
-                  <Button type="button" size="sm" variant="secondary" className="col-span-1"
-                          onClick={() => rmItem(idx)}>Quitar</Button>
-                </div>
-              ))}
+        {!isLoading && !isError && ingresos.length === 0 && (
+          <div className="p-4 text-sm text-slate-500">
+            Aún no hay ingresos registrados.
+          </div>
+        )}
+
+        {!isLoading && !isError && ingresos.length > 0 && (
+          <table className="min-w-full divide-y divide-slate-100 text-sm">
+            <thead className="bg-slate-50">
+              <tr>
+                <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Fecha
+                </th>
+                <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Proveedor
+                </th>
+                <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Documento
+                </th>
+                <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Ítems
+                </th>
+                <th className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Total aprox.
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {ingresos.map((ing) => {
+                const total = calcTotal(ing.items);
+                const resumenItems = ing.items
+                  .slice(0, 3)
+                  .map((it) => `${it.sku} x${it.cantidad}`)
+                  .join(" · ");
+                const mas =
+                  ing.items.length > 3
+                    ? ` (+${ing.items.length - 3} más)`
+                    : "";
+                return (
+                  <tr key={ing.id}>
+                    <td className="whitespace-nowrap px-4 py-2 text-slate-700">
+                      {formatDateShort(ing.fecha)}
+                    </td>
+                    <td className="max-w-xs px-4 py-2 text-slate-800">
+                      <div className="truncate">
+                        {ing.proveedor || "—"}
+                      </div>
+                      {ing.observacion && (
+                        <div className="truncate text-xs text-slate-500">
+                          {ing.observacion}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-slate-700">
+                      {ing.documento || "—"}
+                    </td>
+                    <td className="px-4 py-2 text-xs text-slate-600">
+                      {resumenItems}
+                      {mas}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-2 text-right text-slate-900">
+                      {total > 0 ? `$${money(total)}` : "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Drawer de nuevo ingreso */}
+      {nuevoAbierto && (
+        <div className="fixed inset-0 z-40 flex items-stretch justify-end bg-black/20 backdrop-blur-sm">
+          <div className="h-full w-full max-w-3xl transform bg-white shadow-2xl transition">
+            {/* Header drawer */}
+            <div className="flex items-start justify-between border-b border-slate-200 px-6 py-4">
               <div>
-                <Button type="button" variant="secondary" onClick={addItem}>+ Agregar ítem</Button>
+                <h2 className="text-base font-semibold text-slate-900">
+                  Nuevo ingreso de compra
+                </h2>
+                <p className="text-sm text-slate-500">
+                  Selecciona un proveedor ya registrado y completa
+                  los ítems a ingresar.
+                </p>
               </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!crearIngresoMutation.isPending) {
+                    setNuevoAbierto(false);
+                  }
+                }}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 text-slate-500 hover:bg-slate-50"
+              >
+                <span className="text-lg" aria-hidden>
+                  ×
+                </span>
+              </button>
+            </div>
+
+            {/* Contenido drawer */}
+            <div className="flex h-[calc(100%-56px)] flex-col overflow-y-auto px-6 pb-4 pt-3">
+              {/* Proveedor / tipo doc */}
+              <div className="grid gap-4 md:grid-cols-3">
+                <div className="md:col-span-2">
+                  <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Proveedor
+                  </label>
+                  <div className="mt-1">
+                    <div className="relative">
+                      <input
+                        type="text"
+                        placeholder="Busca por nombre o RUT..."
+                        value={proveedorSearch}
+                        onChange={(e) =>
+                          setProveedorSearch(e.target.value)
+                        }
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20"
+                      />
+                      {/* Dropdown de sugerencias (SOLO cuando se escribe) */}
+                      {hayProveedoresSugeridos && (
+                        <div className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-xl border border-slate-200 bg-white shadow-lg">
+                          {proveedores.map((prov) => (
+                            <button
+                              key={prov.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedProveedor(prov);
+                                setProveedorSearch("");
+                              }}
+                              className="flex w-full flex-col items-start px-3 py-2 text-left text-sm hover:bg-slate-50"
+                            >
+                              <span className="font-medium text-slate-900">
+                                {prov.nombre}
+                              </span>
+                              <span className="text-xs text-slate-500">
+                                {prov.rut || "Sin RUT"}
+                                {prov.email
+                                  ? ` · ${prov.email}`
+                                  : ""}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Tarjeta con proveedor seleccionado (no es listado) */}
+                    {selectedProveedor && (
+                      <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Proveedor seleccionado
+                        </div>
+                        <div className="mt-1 font-medium">
+                          {selectedProveedor.nombre}
+                        </div>
+                        <div className="text-xs text-slate-500">
+                          {selectedProveedor.rut || "Sin RUT"}
+                          {selectedProveedor.email
+                            ? ` · ${selectedProveedor.email}`
+                            : ""}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="md:col-span-1">
+                  <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Tipo de documento
+                  </label>
+                  <select
+                    value={tipoDocumento}
+                    onChange={(e) =>
+                      setTipoDocumento(e.target.value)
+                    }
+                    className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20"
+                  >
+                    {TIPO_DOC_OPCIONES.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+
+                  {bodegaPrincipal && (
+                    <div className="mt-3 rounded-xl border border-dashed border-slate-200 bg-slate-50/60 px-3 py-2 text-xs text-slate-600">
+                      <div className="font-semibold text-slate-700">
+                        Bodega inicial
+                      </div>
+                      <div>{bodegaPrincipal.nombre}</div>
+                      {bodegaPrincipal.codigo && (
+                        <div className="text-[11px] text-slate-500">
+                          {bodegaPrincipal.codigo}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Documento / observación */}
+              <div className="mt-5 grid gap-4 md:grid-cols-3">
+                <div className="md:col-span-1">
+                  <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Número de documento
+                  </label>
+                  <input
+                    type="text"
+                    value={numeroDocumento}
+                    onChange={(e) =>
+                      setNumeroDocumento(e.target.value)
+                    }
+                    placeholder="F-1001"
+                    className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20"
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Observación (opcional)
+                  </label>
+                  <input
+                    type="text"
+                    value={observacion}
+                    onChange={(e) =>
+                      setObservacion(e.target.value)
+                    }
+                    placeholder="Ej: Reposición por proyecto X..."
+                    className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20"
+                  />
+                </div>
+              </div>
+
+              {/* Ítems */}
+              <div className="mt-6">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    Ítems del ingreso
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={handleAgregarItem}
+                    className="text-xs font-medium text-sky-600 hover:text-sky-700"
+                  >
+                    + Agregar ítem
+                  </button>
+                </div>
+
+                <div className="mt-3 space-y-3">
+                  {items.map((it, index) => {
+                    const subcats = it.categoriaCodigo
+                      ? SUBCATEGORIAS_POR_CATEGORIA[
+                          it.categoriaCodigo
+                        ] ?? []
+                      : [];
+                    return (
+                      <div
+                        key={it.id}
+                        className="rounded-2xl border border-slate-200 bg-slate-50/60 px-3 py-3"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            Ítem #{index + 1}
+                          </span>
+                          {items.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleEliminarItem(it.id)
+                              }
+                              className="text-xs text-slate-500 hover:text-red-600"
+                            >
+                              Eliminar ítem
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="mt-2 grid gap-3 md:grid-cols-6">
+                          {/* SKU */}
+                          <div className="md:col-span-1">
+                            <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                              SKU
+                            </label>
+                            <input
+                              type="text"
+                              value={it.sku}
+                              onChange={(e) =>
+                                handleItemChange(
+                                  it.id,
+                                  "sku",
+                                  e.target.value
+                                )
+                              }
+                              className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20"
+                            />
+                          </div>
+
+                          {/* Nombre producto */}
+                          <div className="md:col-span-2">
+                            <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                              Nombre del producto
+                            </label>
+                            <input
+                              type="text"
+                              value={it.nombre}
+                              onChange={(e) =>
+                                handleItemChange(
+                                  it.id,
+                                  "nombre",
+                                  e.target.value
+                                )
+                              }
+                              className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20"
+                            />
+                          </div>
+
+                          {/* Cantidad */}
+                          <div className="md:col-span-1">
+                            <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                              Cantidad
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              value={it.cantidad}
+                              onChange={(e) =>
+                                handleItemChange(
+                                  it.id,
+                                  "cantidad",
+                                  e.target.value
+                                )
+                              }
+                              className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20"
+                            />
+                          </div>
+
+                          {/* Categoría */}
+                          <div className="md:col-span-1">
+                            <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                              Categoría
+                            </label>
+                            <select
+                              value={it.categoriaCodigo}
+                              onChange={(e) =>
+                                handleCategoriaChange(
+                                  it.id,
+                                  e.target.value
+                                )
+                              }
+                              className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20"
+                            >
+                              <option value="">
+                                Seleccionar...
+                              </option>
+                              {CATEGORIAS.map((c) => (
+                                <option
+                                  key={c.value}
+                                  value={c.value}
+                                >
+                                  {c.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {/* Subcategoría */}
+                          <div className="md:col-span-1">
+                            <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                              Subcategoría
+                            </label>
+                            <select
+                              value={it.subcategoriaNombre}
+                              onChange={(e) =>
+                                handleItemChange(
+                                  it.id,
+                                  "subcategoriaNombre",
+                                  e.target.value
+                                )
+                              }
+                              className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20"
+                              disabled={subcats.length === 0}
+                            >
+                              <option value="">
+                                Seleccionar...
+                              </option>
+                              {subcats.map((s) => (
+                                <option key={s} value={s}>
+                                  {s}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 grid gap-3 md:grid-cols-3">
+                          {/* Costo unitario */}
+                          <div>
+                            <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                              Costo unitario
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              value={it.costoUnitario}
+                              onChange={(e) =>
+                                handleItemChange(
+                                  it.id,
+                                  "costoUnitario",
+                                  e.target.value
+                                )
+                              }
+                              className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20"
+                            />
+                          </div>
+
+                          {/* Stock mínimo */}
+                          <div>
+                            <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                              Stock mínimo (crítico)
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              value={it.stockMinimo}
+                              onChange={(e) =>
+                                handleItemChange(
+                                  it.id,
+                                  "stockMinimo",
+                                  e.target.value
+                                )
+                              }
+                              className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Footer acciones */}
+              <div className="mt-6 flex items-center justify-between border-t border-slate-200 pt-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!crearIngresoMutation.isPending) {
+                      setNuevoAbierto(false);
+                    }
+                  }}
+                  className="text-sm font-medium text-slate-600 hover:text-slate-800"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    crearIngresoMutation.mutate()
+                  }
+                  disabled={crearIngresoMutation.isPending}
+                  className="inline-flex items-center justify-center rounded-xl bg-sky-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-sky-700 disabled:opacity-60"
+                >
+                  {crearIngresoMutation.isPending
+                    ? "Guardando..."
+                    : "Registrar ingreso"}
+                </button>
+              </div>
+
+              {crearIngresoMutation.isError && (
+                <div className="mt-2 text-sm text-red-600">
+                  {(crearIngresoMutation.error as Error)
+                    ?.message || "Error al registrar ingreso"}
+                </div>
+              )}
             </div>
           </div>
-
-          <div className="flex items-center justify-between text-sm text-slate-700">
-            <span>Total aprox. (costo x cantidad)</span>
-            <strong>${totalItems.toLocaleString()}</strong>
-          </div>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <Button type="button" variant="secondary" onClick={closeDrawer}>Cancelar</Button>
-            <Button type="submit" variant="primary">{isNew ? "Crear ingreso" : "Guardar cambios"}</Button>
-          </div>
-        </form>
-      </Drawer>
-    </section>
+        </div>
+      )}
+    </div>
   );
 }

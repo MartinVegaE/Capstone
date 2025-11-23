@@ -172,12 +172,16 @@ app.post("/login", async (req, res) => {
 /* =========================
    Productos
    ========================= */
-
 // LISTAR productos
 app.get("/productos", async (_req, res) => {
   try {
     const list = await prisma.producto.findMany({
       orderBy: { id: "asc" },
+      include: {
+        proveedor: {
+          select: { id: true, nombre: true, rut: true },
+        },
+      },
     });
     res.json(list);
   } catch (e) {
@@ -186,7 +190,8 @@ app.get("/productos", async (_req, res) => {
   }
 });
 
-// CREAR producto (versión tolerante)
+
+// CREAR producto (con categoría, subcategoría opcional y proveedor obligatorio)
 app.post("/productos", async (req, res) => {
   const b = req.body || {};
   console.log("[POST /productos] body:", b);
@@ -203,8 +208,32 @@ app.post("/productos", async (req, res) => {
       .json({ error: "sku y nombre son obligatorios" });
   }
 
+  // IDs de relaciones
+  const categoriaId = Number(b.categoriaId);
+  const proveedorId = Number(b.proveedorId);
+  const subcategoriaId =
+    b.subcategoriaId != null ? Number(b.subcategoriaId) : undefined;
+
+  if (!Number.isFinite(categoriaId)) {
+    return res
+      .status(400)
+      .json({ error: "categoriaId es obligatorio y debe ser numérico." });
+  }
+  if (!Number.isFinite(proveedorId)) {
+    return res
+      .status(400)
+      .json({ error: "proveedorId es obligatorio y debe ser numérico." });
+  }
+  if (subcategoriaId !== undefined && !Number.isFinite(subcategoriaId)) {
+    return res
+      .status(400)
+      .json({ error: "subcategoriaId debe ser numérico si se envía." });
+  }
+
   const stockRaw = b.stock ?? b.stockInicial ?? b.stockTotal ?? 0;
   const stock = Number(stockRaw);
+  const stockMinimoRaw = b.stockMinimo ?? b.stockCritico ?? 0;
+  const stockMinimo = Number(stockMinimoRaw);
 
   if (!Number.isFinite(stock) || stock < 0) {
     console.warn("[POST /productos] Stock inválido:", stockRaw);
@@ -212,27 +241,51 @@ app.post("/productos", async (req, res) => {
       .status(400)
       .json({ error: "stock debe ser número >= 0" });
   }
+  if (!Number.isFinite(stockMinimo) || stockMinimo < 0) {
+    console.warn("[POST /productos] stockMinimo inválido:", stockMinimoRaw);
+    return res
+      .status(400)
+      .json({ error: "stockMinimo debe ser número >= 0" });
+  }
 
-  const data = {
+  const dataBase = {
     sku: String(skuRaw).trim(),
     nombre: String(nombreRaw).trim(),
-    marca:
-      (b.marca ?? b.brand ?? b.marcaProducto ?? null)?.trim?.() || null,
-    categoria:
-      (b.categoria ?? b.category ?? b.categoriaProducto ?? null)?.trim?.() ||
-      null,
+    descripcion:
+      b.descripcion != null && String(b.descripcion).trim() !== ""
+        ? String(b.descripcion).trim()
+        : null,
     ubicacion:
-      (b.ubicacion ?? b.location ?? b.ubicacionBodega ?? null)?.trim?.() ||
-      null,
+      b.ubicacion != null && String(b.ubicacion).trim() !== ""
+        ? String(b.ubicacion).trim()
+        : null,
     codigoBarras:
-      (b.codigoBarras ?? b.barcode ?? b.codigo ?? null)?.trim?.() || null,
+      b.codigoBarras != null && String(b.codigoBarras).trim() !== ""
+        ? String(b.codigoBarras).trim()
+        : null,
     stock,
+    stockMinimo,
+    imagenUrl:
+      b.imagenUrl != null && String(b.imagenUrl).trim() !== ""
+        ? String(b.imagenUrl).trim()
+        : null,
   };
 
-  console.log("[POST /productos] data a crear:", data);
+  console.log("[POST /productos] data a crear (base):", dataBase);
 
   try {
-    const creado = await prisma.producto.create({ data });
+    const creado = await prisma.producto.create({
+      data: {
+        ...dataBase,
+        // 🔗 Relaciones
+        categoria: { connect: { id: categoriaId } },
+        proveedor: { connect: { id: proveedorId } },
+        ...(subcategoriaId !== undefined && {
+          subcategoria: { connect: { id: subcategoriaId } },
+        }),
+      },
+    });
+
     console.log("[POST /productos] creado:", creado);
     res.status(201).json(creado);
   } catch (e) {
@@ -269,7 +322,7 @@ app.get("/productos/:id", async (req, res) => {
   }
 });
 
-// EDITAR producto (campos básicos)
+// EDITAR producto (modelo nuevo con categoriaId / proveedorId / imagenUrl)
 app.put("/productos/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) {
@@ -277,26 +330,112 @@ app.put("/productos/:id", async (req, res) => {
   }
 
   const b = req.body || {};
+  console.log("[PUT /productos/:id] body:", b);
+
   const data = {};
 
-  if (b.sku != null) data.sku = String(b.sku).trim();
-  if (b.nombre != null) data.nombre = String(b.nombre).trim();
-  if (b.marca != null) data.marca = b.marca?.trim() || null;
-  if (b.categoria != null) data.categoria = b.categoria?.trim() || null;
-  if (b.ubicacion != null) data.ubicacion = b.ubicacion?.trim() || null;
-  if (b.codigoBarras != null)
-    data.codigoBarras = b.codigoBarras?.trim() || null;
-  if (b.stock != null) {
-    const s = Number(b.stock);
-    if (!Number.isFinite(s) || s < 0)
+  if (b.sku != null) {
+    const sku = String(b.sku).trim();
+    if (!sku) {
+      return res.status(400).json({ error: "sku no puede estar vacío" });
+    }
+    data.sku = sku;
+  }
+
+  if (b.nombre != null) {
+    const nombre = String(b.nombre).trim();
+    if (!nombre) {
       return res
         .status(400)
-        .json({ error: "stock debe ser número >= 0" });
+        .json({ error: "El nombre del producto es obligatorio." });
+    }
+    data.nombre = nombre;
+  }
+
+  if (b.descripcion !== undefined) {
+    const d = b.descripcion;
+    data.descripcion =
+      d == null || String(d).trim() === "" ? null : String(d).trim();
+  }
+
+  if (b.ubicacion !== undefined) {
+    const u = b.ubicacion;
+    data.ubicacion =
+      u == null || String(u).trim() === "" ? null : String(u).trim();
+  }
+
+  if (b.codigoBarras !== undefined) {
+    const c = b.codigoBarras;
+    data.codigoBarras =
+      c == null || String(c).trim() === "" ? null : String(c).trim();
+  }
+
+  if (b.imagenUrl !== undefined) {
+    const img = b.imagenUrl;
+    data.imagenUrl =
+      img == null || String(img).trim() === "" ? null : String(img).trim();
+  }
+
+  if (b.stock != null) {
+    const s = Number(b.stock);
+    if (!Number.isFinite(s) || s < 0) {
+      return res
+        .status(400)
+        .json({ error: "stock debe ser un número mayor o igual a 0" });
+    }
     data.stock = s;
   }
 
+  if (b.stockMinimo != null) {
+    const sm = Number(b.stockMinimo);
+    if (!Number.isFinite(sm) || sm < 0) {
+      return res
+        .status(400)
+        .json({ error: "stockMinimo debe ser un número mayor o igual a 0" });
+    }
+    data.stockMinimo = sm;
+  }
+
+  // Relaciones por ID
+  if (b.categoriaId != null) {
+    const catId = Number(b.categoriaId);
+    if (!Number.isFinite(catId)) {
+      return res
+        .status(400)
+        .json({ error: "categoriaId debe ser numérico" });
+    }
+    data.categoriaId = catId;
+  }
+
+  if (b.subcategoriaId != null) {
+    if (b.subcategoriaId === "" || b.subcategoriaId === null) {
+      data.subcategoriaId = null; // limpiar subcategoría
+    } else {
+      const subId = Number(b.subcategoriaId);
+      if (!Number.isFinite(subId)) {
+        return res
+          .status(400)
+          .json({ error: "subcategoriaId debe ser numérico" });
+      }
+      data.subcategoriaId = subId;
+    }
+  }
+
+  if (b.proveedorId != null) {
+    const provId = Number(b.proveedorId);
+    if (!Number.isFinite(provId)) {
+      return res
+        .status(400)
+        .json({ error: "proveedorId debe ser numérico" });
+    }
+    data.proveedorId = provId;
+  }
+
   try {
-    const updated = await prisma.producto.update({ where: { id }, data });
+    const updated = await prisma.producto.update({
+      where: { id },
+      data,
+    });
     res.json(updated);
   } catch (e) {
     if (e?.code === "P2002") {
@@ -305,9 +444,12 @@ app.put("/productos/:id", async (req, res) => {
         .status(409)
         .json({ error: `Ya existe un producto con ese ${campo}` });
     }
-    res.status(400).json({ error: String(e.message || e) });
+    console.error("[PUT /productos/:id] Error:", e);
+    res.status(400).json({ error: e?.message || String(e) });
   }
 });
+
+
 
 // ELIMINAR producto
 app.delete("/productos/:id", async (req, res) => {
@@ -576,26 +718,78 @@ app.post("/ingresos", async (req, res) => {
    Proyectos: salidas/retornos
    ========================= */
 
-async function resolveProyecto(tx, body) {
-  if (body.proyectoId) {
-    const p = await tx.proyecto.findUnique({
-      where: { id: Number(body.proyectoId) },
-    });
-    if (!p) throw new Error(`Proyecto con id ${body.proyectoId} no encontrado.`);
-    return p;
+async function resolveProveedor(tx, payload) {
+  // 1) proveedorId directo (lo que envía el frontend)
+  if (payload.proveedorId != null) {
+    const id = Number(payload.proveedorId);
+    if (!Number.isFinite(id)) {
+      throw new Error("proveedorId inválido");
+    }
+
+    const prov = await tx.proveedor.findUnique({ where: { id } });
+    if (!prov) {
+      throw new Error(`Proveedor con id ${id} no encontrado.`);
+    }
+    return prov;
   }
-  if (body.proyecto) {
-    const p = await tx.proyecto.findFirst({
-      where: { nombre: String(body.proyecto) },
-    });
-    if (!p)
-      throw new Error(
-        `Proyecto con nombre "${body.proyecto}" no encontrado.`
-      );
-    return p;
+
+  // 2) proveedor.id dentro del objeto proveedor (compatibilidad)
+  if (
+    payload.proveedor &&
+    typeof payload.proveedor === "object" &&
+    payload.proveedor.id != null
+  ) {
+    const id = Number(payload.proveedor.id);
+    if (!Number.isFinite(id)) {
+      throw new Error("proveedor.id inválido");
+    }
+
+    const prov = await tx.proveedor.findUnique({ where: { id } });
+    if (!prov) {
+      throw new Error(`Proveedor con id ${id} no encontrado.`);
+    }
+    return prov;
   }
-  throw new Error("Debe indicar proyectoId o proyecto (nombre).");
+
+  // 3) Lógica antigua: buscar por rut / nombre (sin crear)
+  if (payload.proveedor && typeof payload.proveedor === "object") {
+    const rawRut = payload.proveedor.rut ?? "";
+    const rawNombre = payload.proveedor.nombre ?? "";
+
+    const rut =
+      typeof rawRut === "string" ? rawRut.trim() : String(rawRut).trim();
+    const nombre =
+      typeof rawNombre === "string"
+        ? rawNombre.trim()
+        : String(rawNombre).trim();
+
+    if (rut) {
+      const prov = await tx.proveedor.findFirst({
+        where: { rut },
+      });
+      if (!prov) {
+        throw new Error(`Proveedor con RUT ${rut} no encontrado.`);
+      }
+      return prov;
+    }
+
+    if (nombre) {
+      const prov = await tx.proveedor.findFirst({
+        where: { nombre }, // 👈 sin mode, SQLite no lo soporta
+      });
+      if (!prov) {
+        throw new Error(`Proveedor con nombre "${nombre}" no encontrado.`);
+      }
+      return prov;
+    }
+  }
+
+  // 4) Nada válido
+  throw new Error(
+    "Debe indicar proveedorId o un objeto proveedor con rut/nombre válido."
+  );
 }
+
 
 async function resolveBodegaPrincipal(tx) {
   const principal = await tx.bodega.findFirst({
@@ -819,6 +1013,85 @@ app.post("/proyectos/retornos", async (req, res) => {
     res.status(400).json({ error: e?.message || String(e) });
   }
 });
+
+// LISTAR movimientos de proyecto (salidas y retornos)
+app.get("/proyectos/movimientos", async (req, res) => {
+  try {
+    const {
+      q = "",
+      tipo = "ALL",
+      page = "1",
+      pageSize = "10",
+    } = req.query;
+
+    const pageNumber = Math.max(parseInt(page, 10) || 1, 1);
+    const sizeNumber = Math.max(parseInt(pageSize, 10) || 10, 1);
+    const skip = (pageNumber - 1) * sizeNumber;
+
+    const where = {};
+
+    // Filtro por tipo: SALIDA / RETORNO
+    if (typeof tipo === "string" && tipo !== "ALL" && tipo.trim() !== "") {
+      const t = tipo.trim().toUpperCase();
+      if (t === "SALIDA" || t === "RETORNO") {
+        where.tipo = t;
+      }
+    }
+
+    // Búsqueda por proyecto, documento u observación
+    if (typeof q === "string" && q.trim() !== "") {
+      const query = q.trim();
+      where.OR = [
+        { proyecto: { contains: query, mode: "insensitive" } },
+        { documento: { contains: query, mode: "insensitive" } },
+        { observacion: { contains: query, mode: "insensitive" } },
+      ];
+    }
+
+    const [rows, total] = await Promise.all([
+      prisma.movimientoProyecto.findMany({
+        where,
+        orderBy: { id: "desc" },
+        skip,
+        take: sizeNumber,
+        include: {
+          items: {
+            include: {
+              producto: {
+                select: { sku: true, nombre: true },
+              },
+            },
+          },
+        },
+      }),
+      prisma.movimientoProyecto.count({ where }),
+    ]);
+
+    const data = rows.map((m) => ({
+      id: m.id,
+      fecha: m.fecha.toISOString(),
+      tipo: m.tipo === "SALIDA" ? "Salida" : "Retorno",
+      proyecto: m.proyecto,
+      documento: m.documento ?? "",
+      observacion: m.observacion ?? "",
+      items: m.items.map((it) => ({
+        sku: it.producto?.sku ?? "",
+        nombre: it.producto?.nombre ?? "",
+        cantidad: it.cantidad,
+        costoUnitario:
+          it.costoUnitario != null
+            ? Number.parseFloat(String(it.costoUnitario))
+            : undefined,
+      })),
+    }));
+
+    res.json({ data, total });
+  } catch (e) {
+    console.error("[GET /proyectos/movimientos] Error:", e?.message || e);
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
 
 /* =========================
    Reportes PPP
@@ -1137,16 +1410,36 @@ app.put("/bodegas/:id", async (req, res) => {
 
 app.get("/proveedores", async (req, res) => {
   try {
-    const { incluirInactivos = "0" } = req.query;
+    const { incluirInactivos = "0", q = "" } = req.query;
 
-    const where =
-      incluirInactivos === "1" || incluirInactivos === "true"
-        ? {}
-        : { activo: true };
+    const where = {};
+
+    // Solo activos por defecto
+    if (!(incluirInactivos === "1" || incluirInactivos === "true")) {
+      where.activo = true;
+    }
+
+    // Búsqueda por nombre / RUT (SIN mode: "insensitive" porque usamos SQLite)
+    if (typeof q === "string" && q.trim() !== "") {
+      const query = q.trim();
+      where.OR = [
+        { nombre: { contains: query } },
+        { rut: { contains: query } },
+      ];
+    }
 
     const rows = await prisma.proveedor.findMany({
       where,
       orderBy: { nombre: "asc" },
+      take: 30, // límite razonable para el combo/buscador
+      select: {
+        id: true,
+        nombre: true,
+        rut: true,
+        email: true,
+        telefono: true,
+        activo: true,
+      },
     });
 
     res.json(rows);
@@ -1155,6 +1448,7 @@ app.get("/proveedores", async (req, res) => {
     res.status(500).json({ error: e?.message || String(e) });
   }
 });
+
 
 // Obtener 1 proveedor por id
 app.get("/proveedores/:id", async (req, res) => {
@@ -1647,6 +1941,239 @@ app.get("/devoluciones/proveedor/:id", async (req, res) => {
   } catch (e) {
     console.error("[GET /devoluciones/proveedor/:id] Error:", e);
     res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+
+// Listar subcategorías (opcionalmente filtradas por categoriaId)
+app.get("/subcategorias", async (req, res) => {
+  try {
+    const { categoriaId } = req.query;
+
+    const where = {};
+    if (categoriaId !== undefined) {
+      const catId = Number(categoriaId);
+      if (!Number.isInteger(catId) || catId <= 0) {
+        return res
+          .status(400)
+          .json({ error: "categoriaId debe ser un número entero válido" });
+      }
+      where.categoriaId = catId;
+    }
+
+    const subcategorias = await prisma.subcategoria.findMany({
+      where,
+      include: {
+        categoria: true, // así el front puede mostrar código/nombre de la categoría
+      },
+      orderBy: [
+        { categoriaId: "asc" },
+        { nombre: "asc" },
+      ],
+    });
+
+    res.json(subcategorias);
+  } catch (error) {
+    console.error("Error al listar subcategorías:", error);
+    res.status(500).json({ error: "Error al listar subcategorías" });
+  }
+});
+
+app.get("/subcategorias/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res
+        .status(400)
+        .json({ error: "El id debe ser un número entero válido" });
+    }
+
+    const subcategoria = await prisma.subcategoria.findUnique({
+      where: { id },
+      include: { categoria: true },
+    });
+
+    if (!subcategoria) {
+      return res.status(404).json({ error: "Subcategoría no encontrada" });
+    }
+
+    res.json(subcategoria);
+  } catch (error) {
+    console.error("Error al obtener subcategoría:", error);
+    res.status(500).json({ error: "Error al obtener subcategoría" });
+  }
+});
+
+app.post("/subcategorias", async (req, res) => {
+  try {
+    const { nombre, categoriaId } = req.body;
+
+    if (!nombre || !categoriaId) {
+      return res
+        .status(400)
+        .json({ error: "nombre y categoriaId son obligatorios" });
+    }
+
+    const trimmedNombre = String(nombre).trim();
+    const catId = Number(categoriaId);
+
+    if (!trimmedNombre) {
+      return res
+        .status(400)
+        .json({ error: "El nombre de la subcategoría no puede estar vacío" });
+    }
+
+    if (!Number.isInteger(catId) || catId <= 0) {
+      return res
+        .status(400)
+        .json({ error: "categoriaId debe ser un número entero válido" });
+    }
+
+    // Verificar que la categoría exista
+    const categoria = await prisma.categoria.findUnique({
+      where: { id: catId },
+    });
+    if (!categoria) {
+      return res.status(404).json({ error: "Categoría no encontrada" });
+    }
+
+    // Evitar duplicado (respeta @@unique([categoriaId, nombre])
+    const yaExiste = await prisma.subcategoria.findFirst({
+      where: {
+        categoriaId: catId,
+        nombre: trimmedNombre,
+      },
+    });
+
+    if (yaExiste) {
+      return res.status(409).json({
+        error:
+          "Ya existe una subcategoría con ese nombre para la categoría indicada",
+      });
+    }
+
+    const creada = await prisma.subcategoria.create({
+      data: {
+        nombre: trimmedNombre,
+        categoriaId: catId,
+      },
+    });
+
+    res.status(201).json(creada);
+  } catch (error) {
+    console.error("Error al crear subcategoría:", error);
+    res.status(500).json({ error: "Error al crear subcategoría" });
+  }
+});
+
+app.put("/subcategorias/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { nombre, categoriaId } = req.body;
+
+    if (!Number.isInteger(id) || id <= 0) {
+      return res
+        .status(400)
+        .json({ error: "El id debe ser un número entero válido" });
+    }
+
+    if (!nombre && !categoriaId) {
+      return res.status(400).json({
+        error: "Debes enviar al menos nombre o categoriaId para actualizar",
+      });
+    }
+
+    const data = {};
+
+    if (nombre !== undefined) {
+      const trimmedNombre = String(nombre).trim();
+      if (!trimmedNombre) {
+        return res.status(400).json({
+          error: "El nombre de la subcategoría no puede estar vacío",
+        });
+      }
+      data.nombre = trimmedNombre;
+    }
+
+    if (categoriaId !== undefined) {
+      const catId = Number(categoriaId);
+      if (!Number.isInteger(catId) || catId <= 0) {
+        return res
+          .status(400)
+          .json({ error: "categoriaId debe ser un número entero válido" });
+      }
+
+      const categoria = await prisma.categoria.findUnique({
+        where: { id: catId },
+      });
+      if (!categoria) {
+        return res.status(404).json({ error: "Categoría no encontrada" });
+      }
+
+      data.categoriaId = catId;
+    }
+
+    const actualizada = await prisma.subcategoria.update({
+      where: { id },
+      data,
+    });
+
+    res.json(actualizada);
+  } catch (error) {
+    console.error("Error al actualizar subcategoría:", error);
+
+    // P2002 = unique constraint violation
+    if (error.code === "P2002") {
+      return res.status(409).json({
+        error:
+          "Ya existe una subcategoría con ese nombre para la categoría indicada",
+      });
+    }
+
+    res.status(500).json({ error: "Error al actualizar subcategoría" });
+  }
+});
+
+app.delete("/subcategorias/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res
+        .status(400)
+        .json({ error: "El id debe ser un número entero válido" });
+    }
+
+    await prisma.subcategoria.delete({
+      where: { id },
+    });
+
+    // 204 = No Content
+    res.status(204).send();
+  } catch (error) {
+    console.error("Error al eliminar subcategoría:", error);
+
+    // P2003 = violation of foreign key constraint (productos asociados)
+    if (error.code === "P2003") {
+      return res.status(409).json({
+        error:
+          "No se puede eliminar la subcategoría porque tiene productos asociados",
+      });
+    }
+
+    res.status(500).json({ error: "Error al eliminar subcategoría" });
+  }
+});
+
+// LISTAR CATEGORÍAS
+app.get("/categorias", async (_req, res) => {
+  try {
+    const list = await prisma.categoria.findMany({
+      orderBy: [{ codigo: "asc" }], // EXT, DET, ACF, FUN
+    });
+    res.json(list);
+  } catch (error) {
+    console.error("Error al listar categorías:", error);
+    res.status(500).json({ error: "Error al listar categorías" });
   }
 });
 
