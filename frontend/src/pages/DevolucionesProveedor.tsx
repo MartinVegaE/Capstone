@@ -1,41 +1,19 @@
 // src/pages/DevolucionesProveedor.tsx
-import React, { useMemo, useState } from "react";
+import React, {
+  Fragment,
+  useMemo,
+  useState,
+  type FormEvent,
+} from "react";
+import { Dialog, Transition } from "@headlessui/react";
 import {
   useQuery,
   useMutation,
   useQueryClient,
 } from "@tanstack/react-query";
+import { http } from "../lib/http";
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_URL || "http://localhost:4000";
-
-async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-    },
-    ...options,
-  });
-
-  let data: any = null;
-  try {
-    data = await res.json();
-  } catch {
-    // si no hay JSON, lo dejamos en null
-  }
-
-  if (!res.ok) {
-    const msg =
-      data && data.error
-        ? data.error
-        : `Error HTTP ${res.status}`;
-    throw new Error(msg);
-  }
-
-  return data as T;
-}
-
-// ==== Tipos DTO que vienen del backend ====
+/* ========= Tipos DTO que vienen del backend ========= */
 
 type ProveedorDTO = {
   id: number;
@@ -78,6 +56,15 @@ type DevolucionListResponse = {
   total: number;
 };
 
+type ProductoCombo = {
+  id: number;
+  sku: string;
+  nombre: string;
+  codigoBarras?: string | null;
+};
+
+/* ========= Helpers ========= */
+
 function formatDate(iso: string) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -96,86 +83,241 @@ function formatCurrencyCLP(value: number) {
   }).format(value);
 }
 
-// ===============================
-//   Formulario: Nueva devolución
-// ===============================
+/* ========= Fetchers (http wrapper) ========= */
+
+async function fetchProveedores(): Promise<ProveedorDTO[]> {
+  const res = await http.get<ProveedorDTO[]>("/proveedores");
+  return res.data;
+}
+
+async function fetchDevolucionesProveedor(params: {
+  search: string;
+  proveedorFilter: string;
+  page: number;
+  pageSize: number;
+}): Promise<DevolucionListResponse> {
+  const { search, proveedorFilter, page, pageSize } = params;
+  const res = await http.get<DevolucionListResponse>(
+    "/devoluciones/proveedor",
+    {
+      params: {
+        page,
+        pageSize,
+        q: search.trim() || undefined,
+        proveedorId: proveedorFilter || undefined,
+      },
+    }
+  );
+  return res.data;
+}
+
+// Igual lógica que Movements.tsx: toleramos varias formas de respuesta
+async function fetchProductosCombo(): Promise<ProductoCombo[]> {
+  const res = await http.get("/productos", {
+    params: {
+      page: 1,
+      pageSize: 500,
+    },
+  });
+
+  const body: any = res.data;
+  console.log("Respuesta /productos (combo devoluciones):", body);
+
+  let productos: any[] = [];
+
+  if (Array.isArray(body)) {
+    productos = body;
+  } else if (Array.isArray(body.data)) {
+    productos = body.data;
+  } else if (Array.isArray(body.productos)) {
+    productos = body.productos;
+  } else {
+    productos = [];
+  }
+
+  return productos.map((p) => ({
+    id: p.id,
+    sku: p.sku ?? "",
+    nombre: p.nombre ?? "",
+    codigoBarras:
+      p.codigoBarras ?? p.codigo_barra ?? p.codigo ?? null,
+  }));
+}
+
+/* ========= Tipos para el formulario ========= */
 
 type NewItemRow = {
-  id: number;
+  id: string;
   sku: string;
-  cantidad: number;
+  cantidad: string;
+  search: string;
+  nombre: string;
 };
 
 type NewDevolucionPayload = {
   tipoDocumento?: string;
-  numeroDocumento?: string;
-  observacion?: string;
+  numeroDocumento?: string | null;
+  observacion?: string | null;
   proveedorId: number;
   items: { sku: string; cantidad: number }[];
 };
 
-function NuevaDevolucionForm(props: { onCreated?: () => void }) {
-  const { onCreated } = props;
+/* ========= Página principal ========= */
+
+export default function DevolucionesProveedorPage() {
   const queryClient = useQueryClient();
+
+  /* --- Listado / filtros --- */
+  const [search, setSearch] = useState("");
+  const [proveedorFilter, setProveedorFilter] = useState<string>("");
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
+
+  const devolucionesQuery = useQuery({
+    queryKey: [
+      "devolucionesProveedor",
+      { search, proveedorFilter, page, pageSize },
+    ],
+    queryFn: () =>
+      fetchDevolucionesProveedor({
+        search,
+        proveedorFilter,
+        page,
+        pageSize,
+      }),
+    keepPreviousData: true,
+  });
+
+  const proveedoresFiltroQuery = useQuery({
+    queryKey: ["proveedores", "filtro"],
+    queryFn: fetchProveedores,
+  });
+
+  const devoluciones = devolucionesQuery.data?.data ?? [];
+  const total = devolucionesQuery.data?.total ?? 0;
+  const totalPages = useMemo(
+    () => Math.max(1, Math.ceil(total / pageSize)),
+    [total, pageSize]
+  );
+
+  /* --- Estado slide-over formulario --- */
+
+  const [isOpen, setIsOpen] = useState(false);
 
   const [numeroDocumento, setNumeroDocumento] = useState("");
   const [observacion, setObservacion] = useState("");
-  const [proveedorId, setProveedorId] = useState<string>("");
-  const [items, setItems] = useState<NewItemRow[]>([
-    { id: 1, sku: "", cantidad: 1 },
-  ]);
-  const [errorLocal, setErrorLocal] = useState<string | null>(null);
 
-  // Lista de proveedores para el select
-  const proveedoresQuery = useQuery({
-    queryKey: ["proveedores"],
-    queryFn: () => fetchJson<ProveedorDTO[]>("/proveedores"),
+  const [proveedorSearch, setProveedorSearch] = useState("");
+  const [selectedProveedor, setSelectedProveedor] =
+    useState<ProveedorDTO | null>(null);
+
+  const [items, setItems] = useState<NewItemRow[]>([
+    {
+      id: "item-1",
+      sku: "",
+      cantidad: "1",
+      search: "",
+      nombre: "",
+    },
+  ]);
+
+  const [formError, setFormError] = useState<string | null>(null);
+
+  /* --- Datos para combos del formulario --- */
+
+  const {
+    data: proveedoresData,
+    isLoading: loadingProveedores,
+    isError: errorProveedores,
+  } = useQuery({
+    queryKey: ["proveedores", "combo-devoluciones"],
+    queryFn: fetchProveedores,
+    enabled: isOpen,
   });
 
-  const mutation = useMutation({
+  const proveedores = proveedoresData ?? [];
+
+  const proveedoresFiltrados = useMemo(() => {
+    const term = proveedorSearch.trim().toLowerCase();
+    if (!term) return [];
+    return proveedores.filter((p) => {
+      const nombre = (p.nombre ?? "").toLowerCase();
+      const rut = (p.rut ?? "").toLowerCase();
+      return nombre.includes(term) || rut.includes(term);
+    });
+  }, [proveedores, proveedorSearch]);
+
+  const hayProveedoresSugeridos =
+    proveedorSearch.trim().length > 0 &&
+    proveedoresFiltrados.length > 0;
+
+  const {
+    data: productosData,
+    isLoading: loadingProductos,
+    isError: errorProductos,
+  } = useQuery({
+    queryKey: ["productos", "combo-devoluciones"],
+    queryFn: fetchProductosCombo,
+    enabled: isOpen,
+  });
+
+  const productos = productosData ?? [];
+
+  /* --- Mutación crear devolución --- */
+
+  const crearDevolucionMutation = useMutation({
     mutationKey: ["crearDevolucionProveedor"],
-    mutationFn: (payload: NewDevolucionPayload) =>
-      fetchJson<{ ok: boolean; devolucionId: number }>(
+    mutationFn: async (payload: NewDevolucionPayload) => {
+      const res = await http.post(
         "/devoluciones/proveedor",
-        {
-          method: "POST",
-          body: JSON.stringify(payload),
-        }
-      ),
+        payload
+      );
+      return res.data;
+    },
     onSuccess: () => {
-      // refrescar listado
       queryClient.invalidateQueries({
         queryKey: ["devolucionesProveedor"],
       });
-      // limpiar formulario
-      setNumeroDocumento("");
-      setObservacion("");
-      setProveedorId("");
-      setItems([{ id: 1, sku: "", cantidad: 1 }]);
-      setErrorLocal(null);
-      onCreated?.();
+      resetForm();
+      setIsOpen(false);
     },
   });
 
-  function addItemRow() {
-    setItems((prev) => [
-      ...prev,
+  const saving = crearDevolucionMutation.isPending;
+
+  /* --- Helpers formulario --- */
+
+  function resetForm() {
+    setNumeroDocumento("");
+    setObservacion("");
+    setProveedorSearch("");
+    setSelectedProveedor(null);
+    setItems([
       {
-        id: prev.length ? prev[prev.length - 1].id + 1 : 1,
+        id: "item-1",
         sku: "",
-        cantidad: 1,
+        cantidad: "1",
+        search: "",
+        nombre: "",
       },
     ]);
+    setFormError(null);
+    crearDevolucionMutation.reset();
   }
 
-  function removeItemRow(id: number) {
-    setItems((prev) =>
-      prev.length <= 1 ? prev : prev.filter((r) => r.id !== id)
-    );
+  function openForm() {
+    resetForm();
+    setIsOpen(true);
   }
 
-  function updateItem(
-    id: number,
+  function closePanel() {
+    if (!saving) {
+      setIsOpen(false);
+    }
+  }
+
+  function handleItemChange(
+    id: string,
     field: keyof NewItemRow,
     value: string
   ) {
@@ -184,487 +326,676 @@ function NuevaDevolucionForm(props: { onCreated?: () => void }) {
         r.id === id
           ? {
               ...r,
-              [field]:
-                field === "cantidad"
-                  ? Number(value) || 0
-                  : value,
+              [field]: value,
             }
           : r
       )
     );
   }
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setErrorLocal(null);
+  function handleAgregarItem() {
+    setItems((prev) => [
+      ...prev,
+      {
+        id: `item-${prev.length + 1}-${Date.now()}`,
+        sku: "",
+        cantidad: "1",
+        search: "",
+        nombre: "",
+      },
+    ]);
+  }
 
-    const pid = Number(proveedorId);
-    if (!Number.isFinite(pid) || pid <= 0) {
-      setErrorLocal("Debes seleccionar un proveedor.");
+  function handleEliminarItem(id: string) {
+    setItems((prev) =>
+      prev.length <= 1 ? prev : prev.filter((r) => r.id !== id)
+    );
+  }
+
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    setFormError(null);
+
+    if (!selectedProveedor) {
+      setFormError("Debes seleccionar un proveedor.");
       return;
     }
 
-    const itemsValidos = items
+    const cleanedItems = items
       .map((it) => ({
-        sku: it.sku.trim(),
-        cantidad: Number(it.cantidad),
+        ...it,
+        cantidadNum: Number(it.cantidad),
       }))
-      .filter((it) => it.sku && it.cantidad > 0);
+      .filter(
+        (it) =>
+          it.sku.trim() &&
+          Number.isFinite(it.cantidadNum) &&
+          it.cantidadNum > 0
+      );
 
-    if (!itemsValidos.length) {
-      setErrorLocal(
-        "Debes ingresar al menos un ítem con SKU y cantidad > 0."
+    if (cleanedItems.length === 0) {
+      setFormError(
+        "Debes agregar al menos un ítem con producto y cantidad mayor a 0."
       );
       return;
     }
 
     const payload: NewDevolucionPayload = {
-      tipoDocumento: "NC", // el backend hoy lo ignora, pero queda coherente
-      numeroDocumento: numeroDocumento.trim() || undefined,
-      observacion: observacion.trim() || undefined,
-      proveedorId: pid,
-      items: itemsValidos,
+      tipoDocumento: "NC",
+      numeroDocumento: numeroDocumento.trim() || null,
+      observacion: observacion.trim() || null,
+      proveedorId: selectedProveedor.id,
+      items: cleanedItems.map((it) => ({
+        sku: it.sku.trim(),
+        cantidad: it.cantidadNum,
+      })),
     };
 
-    mutation.mutate(payload);
+    crearDevolucionMutation.mutate(payload);
   }
 
-  return (
-    <div className="rounded-xl border bg-white p-4 shadow-sm">
-      <h2 className="text-lg font-semibold mb-3">
-        Nueva devolución a proveedor
-      </h2>
+  /* --- Render --- */
 
-      <form className="space-y-4" onSubmit={handleSubmit}>
-        <div className="grid gap-3 md:grid-cols-3">
-          <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium">
-              Proveedor
-            </label>
+  return (
+    <>
+      <div className="mx-auto max-w-7xl space-y-6 p-6">
+        {/* Header página + botón nueva devolución */}
+        <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-slate-900">
+              Devoluciones a proveedor
+            </h1>
+            <p className="mt-1 max-w-2xl text-sm text-slate-600">
+              Registra devoluciones de productos a proveedores. El
+              stock y el costo promedio se ajustan automáticamente.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={openForm}
+            className="inline-flex items-center justify-center rounded-xl bg-rose-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-rose-700"
+          >
+            + Nueva devolución
+          </button>
+        </header>
+
+        {/* Filtros rápidos */}
+        <section className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="relative w-full sm:max-w-md">
+            <input
+              type="text"
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm placeholder:text-slate-400 focus:border-rose-500 focus:outline-none focus:ring-1 focus:ring-rose-500"
+              placeholder="Buscar por proveedor, RUT, documento u observación..."
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(1);
+              }}
+            />
+          </div>
+
+          <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-3">
             <select
-              className="rounded-lg border px-3 py-2 text-sm"
-              value={proveedorId}
-              onChange={(e) =>
-                setProveedorId(e.target.value)
-              }
-              disabled={proveedoresQuery.isLoading}
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:border-rose-500 focus:outline-none focus:ring-1 focus:ring-rose-500 sm:w-56"
+              value={proveedorFilter}
+              onChange={(e) => {
+                setProveedorFilter(e.target.value);
+                setPage(1);
+              }}
             >
-              <option value="">Selecciona proveedor…</option>
-              {proveedoresQuery.data?.map((p) => (
+              <option value="">Todos los proveedores</option>
+              {proveedoresFiltroQuery.data?.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.nombre}
                   {p.rut ? ` (${p.rut})` : ""}
                 </option>
               ))}
             </select>
-          </div>
 
-          <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium">
-              Número de documento (NC)
-            </label>
-            <input
-              type="text"
-              className="rounded-lg border px-3 py-2 text-sm"
-              value={numeroDocumento}
-              onChange={(e) =>
-                setNumeroDocumento(e.target.value)
-              }
-              placeholder="NC-0001"
-            />
-          </div>
-
-          <div className="flex flex-col gap-1 md:col-span-1">
-            <label className="text-sm font-medium">
-              Observación
-            </label>
-            <input
-              type="text"
-              className="rounded-lg border px-3 py-2 text-sm"
-              value={observacion}
-              onChange={(e) =>
-                setObservacion(e.target.value)
-              }
-              placeholder="Motivo de la devolución"
-            />
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">
-              Ítems a devolver
-            </span>
-            <button
-              type="button"
-              className="text-sm text-blue-600 hover:underline"
-              onClick={addItemRow}
-            >
-              + Agregar ítem
-            </button>
-          </div>
-
-          <div className="space-y-2">
-            {items.map((row) => (
-              <div
-                key={row.id}
-                className="grid gap-2 md:grid-cols-[2fr_1fr_auto]"
-              >
-                <input
-                  type="text"
-                  className="rounded-lg border px-3 py-2 text-sm"
-                  placeholder="SKU"
-                  value={row.sku}
-                  onChange={(e) =>
-                    updateItem(row.id, "sku", e.target.value)
-                  }
-                />
-                <input
-                  type="number"
-                  min={1}
-                  className="rounded-lg border px-3 py-2 text-sm"
-                  placeholder="Cantidad"
-                  value={row.cantidad}
-                  onChange={(e) =>
-                    updateItem(row.id, "cantidad", e.target.value)
-                  }
-                />
-                <button
-                  type="button"
-                  className="text-sm text-red-600 hover:underline self-center"
-                  onClick={() => removeItemRow(row.id)}
-                  disabled={items.length <= 1}
-                >
-                  Eliminar
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {errorLocal && (
-          <p className="text-sm text-red-600">{errorLocal}</p>
-        )}
-        {mutation.isError && (
-          <p className="text-sm text-red-600">
-            {(mutation.error as Error).message}
-          </p>
-        )}
-
-        <button
-          type="submit"
-          disabled={mutation.isLoading}
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
-        >
-          {mutation.isLoading
-            ? "Guardando..."
-            : "Registrar devolución"}
-        </button>
-      </form>
-    </div>
-  );
-}
-
-// ===============================
-//   Página principal (cards)
-// ===============================
-
-export default function DevolucionesProveedorPage() {
-  const [search, setSearch] = useState("");
-  const [proveedorFilter, setProveedorFilter] = useState<string>(
-    ""
-  );
-  const [page, setPage] = useState(1);
-  const pageSize = 10;
-  const [expandedId, setExpandedId] = useState<number | null>(
-    null
-  );
-
-  const devolucionesQuery = useQuery({
-    queryKey: [
-      "devolucionesProveedor",
-      { search, proveedorFilter, page, pageSize },
-    ],
-    queryFn: () => {
-      const params = new URLSearchParams();
-      params.set("page", String(page));
-      params.set("pageSize", String(pageSize));
-      if (search.trim()) params.set("q", search.trim());
-      if (proveedorFilter)
-        params.set("proveedorId", proveedorFilter);
-
-      return fetchJson<DevolucionListResponse>(
-        `/devoluciones/proveedor?${params.toString()}`
-      );
-    },
-    keepPreviousData: true,
-  });
-
-  const proveedoresQuery = useQuery({
-    queryKey: ["proveedores"],
-    queryFn: () => fetchJson<ProveedorDTO[]>("/proveedores"),
-  });
-
-  const total = devolucionesQuery.data?.total ?? 0;
-  const totalPages = useMemo(
-    () => Math.max(1, Math.ceil(total / pageSize)),
-    [total, pageSize]
-  );
-
-  function toggleExpand(id: number) {
-    setExpandedId((cur) => (cur === id ? null : id));
-  }
-
-  return (
-    <div className="mx-auto max-w-7xl p-6 space-y-6">
-      <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">
-            Devoluciones a proveedor
-          </h1>
-          <p className="text-sm text-slate-600">
-            Registra y revisa las devoluciones de productos a
-            proveedores. El stock y el PPP se actualizan
-            automáticamente.
-          </p>
-        </div>
-      </header>
-
-      {/* Formulario nueva devolución */}
-      <NuevaDevolucionForm
-        onCreated={() => {
-          setPage(1);
-        }}
-      />
-
-      {/* Filtros */}
-      <section className="rounded-xl border bg-white p-4 shadow-sm space-y-3">
-        <h2 className="text-sm font-semibold text-slate-700">
-          Filtros
-        </h2>
-        <div className="grid gap-3 md:grid-cols-[2fr_2fr_auto]">
-          <input
-            type="text"
-            className="rounded-lg border px-3 py-2 text-sm"
-            placeholder="Buscar por proveedor, RUT, documento u observación..."
-            value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              setPage(1);
-            }}
-          />
-
-          <select
-            className="rounded-lg border px-3 py-2 text-sm"
-            value={proveedorFilter}
-            onChange={(e) => {
-              setProveedorFilter(e.target.value);
-              setPage(1);
-            }}
-          >
-            <option value="">Todos los proveedores</option>
-            {proveedoresQuery.data?.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.nombre}
-                {p.rut ? ` (${p.rut})` : ""}
-              </option>
-            ))}
-          </select>
-
-          <div className="flex items-center gap-2 justify-end text-xs text-slate-600">
-            <span>
-              Total:{" "}
-              <strong>{devolucionesQuery.data?.total ?? 0}</strong>{" "}
-              devoluciones
+            <span className="inline-flex items-center justify-center rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
+              {devolucionesQuery.isLoading
+                ? "Cargando devoluciones..."
+                : `Total: ${total} devoluciones`}
             </span>
           </div>
-        </div>
-      </section>
+        </section>
 
-      {/* Listado en cards */}
-      <section className="space-y-3">
-        {devolucionesQuery.isLoading && (
-          <p className="text-sm text-slate-600">
-            Cargando devoluciones…
-          </p>
-        )}
-        {devolucionesQuery.isError && (
-          <p className="text-sm text-red-600">
-            Error:{" "}
-            {(devolucionesQuery.error as Error).message}
-          </p>
-        )}
+        {/* Tabla de devoluciones (mismo formato que Ingresos) */}
+        <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2">
+            <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              Últimas devoluciones
+            </span>
+            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+              Devoluciones a proveedor
+            </span>
+          </div>
 
-        {!devolucionesQuery.isLoading &&
-          devolucionesQuery.data?.data.length === 0 && (
-            <p className="text-sm text-slate-600">
-              No hay devoluciones registradas.
-            </p>
+          {devolucionesQuery.isError && (
+            <div className="p-4 text-sm text-red-600">
+              Error: {(devolucionesQuery.error as Error).message}
+            </div>
           )}
 
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {devolucionesQuery.data?.data.map((d) => {
-            const expanded = expandedId === d.id;
-            return (
-              <article
-                key={d.id}
-                className="flex flex-col rounded-xl border bg-white p-4 shadow-sm"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="space-y-1">
-                    <p className="text-xs uppercase tracking-wide text-slate-500">
-                      Devolución #{d.id}
-                    </p>
-                    <h3 className="text-sm font-semibold">
-                      Documento:{" "}
-                      {d.numeroDocumento || "Sin número"}
-                    </h3>
-                    <p className="text-xs text-slate-500">
-                      Fecha: {formatDate(d.fecha)}
-                    </p>
-                  </div>
-                  <span className="rounded-full bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-700">
-                    Devolución
-                  </span>
-                </div>
+          {devolucionesQuery.isLoading && (
+            <div className="p-4 text-sm text-slate-600">
+              Cargando devoluciones…
+            </div>
+          )}
 
-                <div className="mt-3 space-y-1 text-sm">
-                  <p>
-                    <span className="font-medium">
-                      Proveedor:
-                    </span>{" "}
-                    {d.proveedor
-                      ? `${d.proveedor.nombre}${
-                          d.proveedor.rut
-                            ? ` (${d.proveedor.rut})`
-                            : ""
-                        }`
-                      : "Sin proveedor"}
-                  </p>
-                  <p className="text-xs text-slate-600">
-                    Bodega:{" "}
-                    {d.bodega?.nombre || "Bodega principal"}
-                  </p>
-                  {d.observacion && (
-                    <p className="text-xs text-slate-600">
-                      Observación: {d.observacion}
-                    </p>
-                  )}
-                </div>
+          {!devolucionesQuery.isLoading &&
+            !devolucionesQuery.isError &&
+            devoluciones.length === 0 && (
+              <div className="p-4 text-sm text-slate-600">
+                No hay devoluciones registradas.
+              </div>
+            )}
 
-                <div className="mt-3 flex items-center justify-between text-sm">
-                  <div className="space-y-0.5">
-                    <p>
-                      <span className="font-medium">
-                        Unidades:
-                      </span>{" "}
-                      {d.totalCantidad}
-                    </p>
-                    <p>
-                      <span className="font-medium">
-                        Ítems:
-                      </span>{" "}
-                      {d.items.length}
-                    </p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-xs text-slate-500">
-                      Valor total estimado
-                    </p>
-                    <p className="text-sm font-semibold">
-                      {formatCurrencyCLP(d.totalValor)}
-                    </p>
-                  </div>
-                </div>
+          {!devolucionesQuery.isLoading &&
+            !devolucionesQuery.isError &&
+            devoluciones.length > 0 && (
+              <>
+                <table className="min-w-full divide-y divide-slate-100 text-sm">
+                  <thead className="bg-slate-50">
+                    <tr>
+                      <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Fecha
+                      </th>
+                      <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Proveedor
+                      </th>
+                      <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Documento
+                      </th>
+                      <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Ítems
+                      </th>
+                      <th className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Total aprox.
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {devoluciones.map((d) => {
+                      const resumenItems = d.items
+                        .slice(0, 3)
+                        .map(
+                          (it) => `${it.sku} x${it.cantidad}`
+                        )
+                        .join(" · ");
+                      const mas =
+                        d.items.length > 3
+                          ? ` (+${d.items.length - 3} más)`
+                          : "";
 
-                <button
-                  type="button"
-                  className="mt-3 text-xs font-medium text-blue-600 hover:underline self-start"
-                  onClick={() => toggleExpand(d.id)}
-                >
-                  {expanded
-                    ? "Ocultar detalle"
-                    : "Ver detalle de ítems"}
-                </button>
-
-                {expanded && (
-                  <div className="mt-2 rounded-lg border bg-slate-50 p-2">
-                    <table className="w-full border-collapse text-[11px]">
-                      <thead>
-                        <tr className="text-left text-slate-500">
-                          <th className="px-1 py-1">
-                            SKU
-                          </th>
-                          <th className="px-1 py-1">
-                            Producto
-                          </th>
-                          <th className="px-1 py-1 text-right">
-                            Cant.
-                          </th>
-                          <th className="px-1 py-1 text-right">
-                            Costo
-                          </th>
+                      return (
+                        <tr
+                          key={d.id}
+                          className="hover:bg-slate-50/60"
+                        >
+                          <td className="whitespace-nowrap px-4 py-2 text-slate-700">
+                            {formatDate(d.fecha)}
+                          </td>
+                          <td className="max-w-xs px-4 py-2 text-slate-800">
+                            <div className="truncate font-medium">
+                              {d.proveedor
+                                ? d.proveedor.nombre
+                                : "—"}
+                            </div>
+                            {d.observacion && (
+                              <div className="truncate text-xs text-slate-500">
+                                {d.observacion}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-4 py-2 text-slate-700">
+                            {d.numeroDocumento || "—"}
+                          </td>
+                          <td className="px-4 py-2 text-xs text-slate-600">
+                            {resumenItems}
+                            {mas}
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-2 text-right text-slate-900">
+                            {formatCurrencyCLP(d.totalValor)}
+                          </td>
                         </tr>
-                      </thead>
-                      <tbody>
-                        {d.items.map((it) => (
-                          <tr key={it.id}>
-                            <td className="px-1 py-0.5">
-                              {it.sku}
-                            </td>
-                            <td className="px-1 py-0.5">
-                              {it.nombreProducto}
-                            </td>
-                            <td className="px-1 py-0.5 text-right">
-                              {it.cantidad}
-                            </td>
-                            <td className="px-1 py-0.5 text-right">
-                              {formatCurrencyCLP(
-                                it.costoUnitario
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                      );
+                    })}
+                  </tbody>
+                </table>
+
+                {/* Paginación simple, pegada abajo como en otras tablas */}
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-4 py-2 text-xs text-slate-700">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPage((p) => Math.max(1, p - 1))
+                      }
+                      disabled={page <= 1}
+                      className="rounded-lg border border-slate-300 px-2 py-1 shadow-sm disabled:opacity-50"
+                    >
+                      Anterior
+                    </button>
+                    <span>
+                      Página {page} de {totalPages}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPage((p) =>
+                          Math.min(totalPages, p + 1)
+                        )
+                      }
+                      disabled={page >= totalPages}
+                      className="rounded-lg border border-slate-300 px-2 py-1 shadow-sm disabled:opacity-50"
+                    >
+                      Siguiente
+                    </button>
                   </div>
                 )}
-              </article>
-            );
-          })}
-        </div>
+              </>
+            )}
+        </section>
+      </div>
 
-        {/* Paginación simple */}
-        {totalPages > 1 && (
-          <div className="flex items-center justify-end gap-2 text-xs">
-            <button
-              type="button"
-              onClick={() =>
-                setPage((p) => Math.max(1, p - 1))
-              }
-              disabled={page <= 1}
-              className="rounded-lg border px-2 py-1 disabled:opacity-50"
-            >
-              Anterior
-            </button>
-            <span>
-              Página {page} de {totalPages}
-            </span>
-            <button
-              type="button"
-              onClick={() =>
-                setPage((p) =>
-                  Math.min(totalPages, p + 1)
-                )
-              }
-              disabled={page >= totalPages}
-              className="rounded-lg border px-2 py-1 disabled:opacity-50"
-            >
-              Siguiente
-            </button>
+      {/* Slide-over formulario nueva devolución */}
+      <Transition.Root show={isOpen} as={Fragment}>
+        <Dialog
+          as="div"
+          className="relative z-50"
+          onClose={closePanel}
+        >
+          <div className="fixed inset-0 bg-slate-900/30 backdrop-blur-sm" />
+
+          <div className="fixed inset-0 overflow-hidden">
+            <div className="absolute inset-y-0 right-0 flex max-w-full pl-10">
+              <Transition.Child
+                as={Fragment}
+                enter="transform transition ease-in-out duration-300"
+                enterFrom="translate-x-full"
+                enterTo="translate-x-0"
+                leave="transform transition ease-in-out duration-300"
+                leaveFrom="translate-x-0"
+                leaveTo="translate-x-full"
+              >
+                <Dialog.Panel className="pointer-events-auto w-screen max-w-3xl bg-white shadow-xl">
+                  <form
+                    onSubmit={handleSubmit}
+                    className="flex h-full flex-col"
+                  >
+                    {/* Header */}
+                    <div className="flex items-start justify-between border-b border-slate-200 px-6 py-4">
+                      <div>
+                        <Dialog.Title className="text-base font-semibold text-slate-900">
+                          Nueva devolución a proveedor
+                        </Dialog.Title>
+                        <p className="mt-1 text-sm text-slate-500">
+                          Selecciona el proveedor, indica el
+                          documento (si aplica) y los productos que
+                          estás devolviendo.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={closePanel}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 text-slate-500 hover:bg-slate-50"
+                      >
+                        <span className="text-lg" aria-hidden>
+                          ×
+                        </span>
+                      </button>
+                    </div>
+
+                    {/* Contenido scrollable */}
+                    <div className="flex-1 space-y-6 overflow-y-auto px-6 pb-4 pt-3">
+                      {/* Proveedor + documento/obs */}
+                      <div className="grid gap-4 md:grid-cols-3">
+                        {/* Proveedor buscable */}
+                        <div className="md:col-span-1">
+                          <label className="text-xs font-medium text-slate-700">
+                            Proveedor
+                          </label>
+                          <div className="mt-1">
+                            <div className="relative">
+                              <input
+                                type="text"
+                                placeholder={
+                                  loadingProveedores
+                                    ? "Cargando proveedores..."
+                                    : "Busca por nombre o RUT..."
+                                }
+                                value={proveedorSearch}
+                                onChange={(e) =>
+                                  setProveedorSearch(
+                                    e.target.value
+                                  )
+                                }
+                                disabled={loadingProveedores}
+                                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-rose-500 focus:outline-none focus:ring-1 focus:ring-rose-500"
+                              />
+                              {hayProveedoresSugeridos && (
+                                <div className="absolute z-30 mt-1 max-h-60 w-full overflow-auto rounded-xl border border-slate-200 bg-white shadow-lg">
+                                  {proveedoresFiltrados.map(
+                                    (p) => (
+                                      <button
+                                        key={p.id}
+                                        type="button"
+                                        onClick={() => {
+                                          setSelectedProveedor(
+                                            p
+                                          );
+                                          setProveedorSearch(
+                                            ""
+                                          );
+                                        }}
+                                        className="flex w-full flex-col items-start px-3 py-2 text-left text-sm hover:bg-slate-50"
+                                      >
+                                        <span className="font-medium text-slate-900">
+                                          {p.nombre}
+                                        </span>
+                                        {p.rut && (
+                                          <span className="text-xs text-slate-500">
+                                            RUT: {p.rut}
+                                          </span>
+                                        )}
+                                      </button>
+                                    )
+                                  )}
+                                </div>
+                              )}
+                            </div>
+
+                            {errorProveedores && (
+                              <p className="mt-1 text-xs text-red-600">
+                                Error cargando proveedores.
+                              </p>
+                            )}
+
+                            {selectedProveedor && (
+                              <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800">
+                                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                  Proveedor seleccionado
+                                </div>
+                                <div className="mt-1 font-medium">
+                                  {selectedProveedor.nombre}
+                                  {selectedProveedor.rut
+                                    ? ` (${selectedProveedor.rut})`
+                                    : ""}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Documento */}
+                        <div className="flex flex-col gap-2 md:col-span-1">
+                          <div>
+                            <label className="text-xs font-medium text-slate-700">
+                              Número de documento
+                            </label>
+                            <input
+                              type="text"
+                              className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-rose-500 focus:outline-none focus:ring-1 focus:ring-rose-500"
+                              value={numeroDocumento}
+                              onChange={(e) =>
+                                setNumeroDocumento(
+                                  e.target.value
+                                )
+                              }
+                              placeholder="NC-0001"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-slate-700">
+                              Comentario (opcional)
+                            </label>
+                            <input
+                              type="text"
+                              className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-rose-500 focus:outline-none focus:ring-1 focus:ring-rose-500"
+                              value={observacion}
+                              onChange={(e) =>
+                                setObservacion(e.target.value)
+                              }
+                              placeholder="Motivo de la devolución"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Ítems */}
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-sm font-semibold text-slate-900">
+                            Ítems a devolver
+                          </h3>
+                          <button
+                            type="button"
+                            onClick={handleAgregarItem}
+                            className="text-xs font-medium text-rose-600 hover:text-rose-700"
+                          >
+                            + Agregar ítem
+                          </button>
+                        </div>
+
+                        <div className="mt-3 space-y-3">
+                          {items.map((row, index) => {
+                            const term =
+                              row.search.trim().toLowerCase();
+                            const sugerencias =
+                              term && productos.length > 0
+                                ? productos
+                                    .filter((p) => {
+                                      const sku = (
+                                        p.sku ?? ""
+                                      ).toLowerCase();
+                                      const nombre = (
+                                        p.nombre ?? ""
+                                      ).toLowerCase();
+                                      const cb = (
+                                        p.codigoBarras ?? ""
+                                      ).toLowerCase();
+                                      return (
+                                        sku.includes(term) ||
+                                        nombre.includes(term) ||
+                                        cb.includes(term)
+                                      );
+                                    })
+                                    .slice(0, 10)
+                                : [];
+                            const haySugerencias =
+                              term.length > 0 &&
+                              sugerencias.length > 0;
+
+                            return (
+                              <div
+                                key={row.id}
+                                className="rounded-2xl border border-slate-200 bg-slate-50/70 px-3 py-3"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                    Ítem #{index + 1}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="text-xs text-slate-500 hover:text-red-600"
+                                    onClick={() =>
+                                      handleEliminarItem(
+                                        row.id
+                                      )
+                                    }
+                                    disabled={
+                                      items.length <= 1
+                                    }
+                                  >
+                                    Eliminar
+                                  </button>
+                                </div>
+
+                                <div className="mt-2 grid gap-3 md:grid-cols-[2fr_1fr]">
+                                  {/* Búsqueda de producto */}
+                                  <div>
+                                    <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                                      Producto (SKU, nombre o
+                                      código de barras)
+                                    </label>
+                                    <div className="relative mt-1">
+                                      <input
+                                        type="text"
+                                        value={row.search}
+                                        onChange={(e) =>
+                                          handleItemChange(
+                                            row.id,
+                                            "search",
+                                            e.target.value
+                                          )
+                                        }
+                                        placeholder={
+                                          loadingProductos
+                                            ? "Cargando productos..."
+                                            : "Escanea o busca por SKU, nombre o código..."
+                                        }
+                                        disabled={
+                                          loadingProductos
+                                        }
+                                        className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-rose-500 focus:outline-none focus:ring-1 focus:ring-rose-500/30"
+                                      />
+
+                                      {haySugerencias && (
+                                        <div className="absolute z-30 mt-1 max-h-60 w-full overflow-auto rounded-xl border border-slate-200 bg-white shadow-lg">
+                                          {sugerencias.map(
+                                            (p) => (
+                                              <button
+                                                key={p.id}
+                                                type="button"
+                                                onClick={() => {
+                                                  setItems(
+                                                    (
+                                                      prev
+                                                    ) =>
+                                                      prev.map(
+                                                        (
+                                                          r
+                                                        ) =>
+                                                          r.id ===
+                                                          row.id
+                                                            ? {
+                                                                ...r,
+                                                                sku: p.sku,
+                                                                nombre:
+                                                                  p.nombre,
+                                                                search: `${p.sku} – ${p.nombre}`,
+                                                              }
+                                                            : r
+                                                      )
+                                                  );
+                                                }}
+                                                className="flex w-full flex-col items-start px-3 py-2 text-left text-xs hover:bg-slate-50"
+                                              >
+                                                <span className="font-medium text-slate-900">
+                                                  {p.sku} ·{" "}
+                                                  {p.nombre}
+                                                </span>
+                                                {p.codigoBarras && (
+                                                  <span className="text-[11px] text-slate-500">
+                                                    Cód. barras:{" "}
+                                                    {
+                                                      p.codigoBarras
+                                                    }
+                                                  </span>
+                                                )}
+                                              </button>
+                                            )
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                    {errorProductos && (
+                                      <p className="mt-1 text-[11px] text-red-600">
+                                        Error cargando productos.
+                                      </p>
+                                    )}
+                                    {row.sku && (
+                                      <p className="mt-1 text-[11px] text-slate-600">
+                                        Producto
+                                        seleccionado:{" "}
+                                        <span className="font-mono">
+                                          {row.sku}
+                                        </span>
+                                        {row.nombre
+                                          ? ` – ${row.nombre}`
+                                          : ""}
+                                      </p>
+                                    )}
+                                  </div>
+
+                                  {/* Cantidad */}
+                                  <div>
+                                    <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                                      Cantidad
+                                    </label>
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs text-slate-900 shadow-sm focus:border-rose-500 focus:outline-none focus:ring-1 focus:ring-rose-500/30"
+                                      placeholder="Cantidad"
+                                      value={row.cantidad}
+                                      onChange={(e) =>
+                                        handleItemChange(
+                                          row.id,
+                                          "cantidad",
+                                          e.target.value
+                                        )
+                                      }
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {formError && (
+                        <div className="text-sm text-red-600">
+                          {formError}
+                        </div>
+                      )}
+                      {crearDevolucionMutation.isError && (
+                        <div className="text-sm text-red-600">
+                          {(
+                            crearDevolucionMutation.error as Error
+                          ).message || "Error al registrar devolución."}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Footer acciones */}
+                    <div className="flex items-center justify-between border-t border-slate-200 px-6 py-3">
+                      <button
+                        type="button"
+                        onClick={closePanel}
+                        className="text-sm font-medium text-slate-600 hover:text-slate-800"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={saving}
+                        className="inline-flex items-center justify-center rounded-xl bg-rose-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-rose-700 disabled:opacity-60"
+                      >
+                        {saving
+                          ? "Guardando..."
+                          : "Registrar devolución"}
+                      </button>
+                    </div>
+                  </form>
+                </Dialog.Panel>
+              </Transition.Child>
+            </div>
           </div>
-        )}
-      </section>
-    </div>
+        </Dialog>
+      </Transition.Root>
+    </>
   );
 }

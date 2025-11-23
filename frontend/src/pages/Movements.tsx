@@ -1,4 +1,4 @@
-// src/pages/SalidasProyecto.tsx
+// src/pages/Movements.tsx
 import React, {
   Fragment,
   useMemo,
@@ -44,11 +44,25 @@ type Proyecto = {
   nombre: string;
 };
 
+type ProductoCombo = {
+  id: number;
+  sku: string;
+  nombre: string;
+  codigoBarras?: string | null;
+};
+
+type ProductosListResponse = {
+  data: ProductoCombo[];
+  total: number;
+};
+
 type ItemDraft = {
   id: string;
   sku: string;
   nombre: string;
   cantidad: string;
+  // texto que escribe el usuario para buscar (SKU, nombre o código de barras)
+  search: string;
 };
 
 type NuevaMovimientoPayload = {
@@ -113,11 +127,53 @@ async function fetchProyectosAll(): Promise<Proyecto[]> {
   return res.data;
 }
 
+// Usa el listado general de productos para alimentar el combo
+async function fetchProductosCombo(): Promise<ProductoCombo[]> {
+  const res = await http.get("/productos", {
+    params: {
+      page: 1,
+      pageSize: 500, // ajusta si necesitas
+    },
+  });
+
+  const body: any = res.data;
+
+  // Para depurar si quieres ver qué viene realmente:
+  console.log("Respuesta /productos para combo:", body);
+
+  let productos: any[] = [];
+
+  // Soportamos varias formas típicas:
+  if (Array.isArray(body)) {
+    // Caso: el backend devuelve directamente [ { ...producto }, ... ]
+    productos = body;
+  } else if (Array.isArray(body.data)) {
+    // Caso: { data: [ ... ], total: n }
+    productos = body.data;
+  } else if (Array.isArray(body.productos)) {
+    // Caso: { productos: [ ... ], total: n }
+    productos = body.productos;
+  } else {
+    // Nada reconocible: dejamos lista vacía (no lanza error)
+    productos = [];
+  }
+
+  // Normalizamos al tipo que usa el combo
+  return productos.map((p) => ({
+    id: p.id,
+    sku: p.sku ?? "",
+    nombre: p.nombre ?? "",
+    // intentamos varios nombres posibles
+    codigoBarras:
+      p.codigoBarras ?? p.codigo_barra ?? p.codigo ?? null,
+  }));
+}
+
 /* =========================
    Página
    ========================= */
 
-export default function SalidasProyectoPage() {
+export default function MovementsPage() {
   const queryClient = useQueryClient();
 
   // Listado
@@ -137,7 +193,13 @@ export default function SalidasProyectoPage() {
     useState<Proyecto | null>(null);
 
   const [items, setItems] = useState<ItemDraft[]>([
-    { id: "item-1", sku: "", nombre: "", cantidad: "" },
+    {
+      id: "item-1",
+      sku: "",
+      nombre: "",
+      cantidad: "",
+      search: "",
+    },
   ]);
 
   /* ========== Datos del listado ========== */
@@ -201,6 +263,20 @@ export default function SalidasProyectoPage() {
     proyectoSearch.trim().length > 0 &&
     proyectosFiltrados.length > 0;
 
+  /* ========== Productos para buscar por SKU / código / nombre ========== */
+
+  const {
+    data: productosData,
+    isLoading: loadingProductos,
+    isError: errorProductos,
+  } = useQuery({
+    queryKey: ["productos", "combo"],
+    queryFn: fetchProductosCombo,
+    enabled: isOpen,
+  });
+
+  const productos = productosData ?? [];
+
   /* ========== Mutación crear egreso / retorno ========== */
 
   const crearMovimientoMutation = useMutation({
@@ -234,7 +310,15 @@ export default function SalidasProyectoPage() {
     setObservacion("");
     setProyectoSearch("");
     setSelectedProyecto(null);
-    setItems([{ id: "item-1", sku: "", nombre: "", cantidad: "" }]);
+    setItems([
+      {
+        id: "item-1",
+        sku: "",
+        nombre: "",
+        cantidad: "",
+        search: "",
+      },
+    ]);
     crearMovimientoMutation.reset();
   }
 
@@ -269,6 +353,7 @@ export default function SalidasProyectoPage() {
         sku: "",
         nombre: "",
         cantidad: "",
+        search: "",
       },
     ]);
   }
@@ -526,7 +611,7 @@ export default function SalidasProyectoPage() {
                     </div>
 
                     {/* Contenido scrollable */}
-                    <div className="flex-1 overflow-y-auto px-6 pb-4 pt-3 space-y-6">
+                    <div className="flex-1 space-y-6 overflow-y-auto px-6 pb-4 pt-3">
                       {/* Proyecto + documento/obs */}
                       <div className="grid gap-4 md:grid-cols-3">
                         <div className="md:col-span-2">
@@ -593,7 +678,7 @@ export default function SalidasProyectoPage() {
                           </p>
                         </div>
 
-                        <div className="md:col-span-1 space-y-3">
+                        <div className="space-y-3 md:col-span-1">
                           <div>
                             <label className="block text-xs font-medium text-slate-700">
                               Documento (opcional)
@@ -646,90 +731,173 @@ export default function SalidasProyectoPage() {
                         </div>
 
                         <div className="mt-3 space-y-3">
-                          {items.map((it, index) => (
-                            <div
-                              key={it.id}
-                              className="rounded-2xl border border-slate-200 bg-slate-50/60 px-3 py-3"
-                            >
-                              <div className="flex items-center justify-between">
-                                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                                  Ítem #{index + 1}
-                                </span>
-                                {items.length > 1 && (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      handleEliminarItem(it.id)
-                                    }
-                                    className="text-xs text-slate-500 hover:text-red-600"
-                                  >
-                                    Eliminar ítem
-                                  </button>
-                                )}
+                          {items.map((it, index) => {
+                            const term = it.search.trim().toLowerCase();
+                            const sugerencias =
+                              term && productos.length > 0
+                                ? productos
+                                    .filter((p) => {
+                                      const sku =
+                                        (p.sku ?? "").toLowerCase();
+                                      const nombre =
+                                        (p.nombre ?? "").toLowerCase();
+                                      const cb = (
+                                        p.codigoBarras ?? ""
+                                      ).toLowerCase();
+                                      return (
+                                        sku.includes(term) ||
+                                        nombre.includes(term) ||
+                                        cb.includes(term)
+                                      );
+                                    })
+                                    .slice(0, 10)
+                                : [];
+                            const haySugerencias =
+                              term.length > 0 &&
+                              sugerencias.length > 0;
+
+                            return (
+                              <div
+                                key={it.id}
+                                className="rounded-2xl border border-slate-200 bg-slate-50/60 px-3 py-3"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                    Ítem #{index + 1}
+                                  </span>
+                                  {items.length > 1 && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleEliminarItem(it.id)
+                                      }
+                                      className="text-xs text-slate-500 hover:text-red-600"
+                                    >
+                                      Eliminar ítem
+                                    </button>
+                                  )}
+                                </div>
+
+                                <div className="mt-2 grid gap-3 md:grid-cols-4">
+                                  {/* Búsqueda de producto (SKU, nombre, código de barras) */}
+                                  <div className="md:col-span-2">
+                                    <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                                      Producto (SKU, nombre o código de barras)
+                                    </label>
+                                    <div className="relative mt-1">
+                                      <input
+                                        type="text"
+                                        value={it.search}
+                                        onChange={(e) =>
+                                          handleItemChange(
+                                            it.id,
+                                            "search",
+                                            e.target.value
+                                          )
+                                        }
+                                        placeholder={
+                                          loadingProductos
+                                            ? "Cargando productos..."
+                                            : "Escanea o busca por SKU, nombre o código..."
+                                        }
+                                        disabled={loadingProductos}
+                                        className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-rose-500 focus:outline-none focus:ring-2 focus:ring-rose-500/20"
+                                      />
+
+                                      {haySugerencias && (
+                                        <div className="absolute z-30 mt-1 max-h-60 w-full overflow-auto rounded-xl border border-slate-200 bg-white shadow-lg">
+                                          {sugerencias.map((p) => (
+                                            <button
+                                              key={p.id}
+                                              type="button"
+                                              onClick={() => {
+                                                setItems((prev) =>
+                                                  prev.map((row) =>
+                                                    row.id === it.id
+                                                      ? {
+                                                          ...row,
+                                                          sku: p.sku,
+                                                          nombre: p.nombre,
+                                                          search: `${p.sku} – ${p.nombre}`,
+                                                        }
+                                                      : row
+                                                  )
+                                                );
+                                              }}
+                                              className="flex w-full flex-col items-start px-3 py-2 text-left text-xs hover:bg-slate-50"
+                                            >
+                                              <span className="font-medium text-slate-900">
+                                                {p.sku} · {p.nombre}
+                                              </span>
+                                              {p.codigoBarras && (
+                                                <span className="text-[11px] text-slate-500">
+                                                  Cód. barras:{" "}
+                                                  {p.codigoBarras}
+                                                </span>
+                                              )}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                    {errorProductos && (
+                                      <p className="mt-1 text-[11px] text-red-600">
+                                        Error cargando productos.
+                                      </p>
+                                    )}
+                                    {it.sku && (
+                                      <p className="mt-1 text-[11px] text-slate-500">
+                                        SKU seleccionado:{" "}
+                                        <span className="font-mono">
+                                          {it.sku}
+                                        </span>
+                                      </p>
+                                    )}
+                                  </div>
+
+                                  {/* Nombre referencia */}
+                                  <div className="md:col-span-1">
+                                    <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                                      Nombre (opcional)
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={it.nombre}
+                                      onChange={(e) =>
+                                        handleItemChange(
+                                          it.id,
+                                          "nombre",
+                                          e.target.value
+                                        )
+                                      }
+                                      placeholder="Solo referencia visual."
+                                      className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-rose-500 focus:outline-none focus:ring-2 focus:ring-rose-500/20"
+                                    />
+                                  </div>
+
+                                  {/* Cantidad */}
+                                  <div className="md:col-span-1">
+                                    <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                                      Cantidad
+                                    </label>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      value={it.cantidad}
+                                      onChange={(e) =>
+                                        handleItemChange(
+                                          it.id,
+                                          "cantidad",
+                                          e.target.value
+                                        )
+                                      }
+                                      className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-900 focus:border-rose-500 focus:outline-none focus:ring-2 focus:ring-rose-500/20"
+                                    />
+                                  </div>
+                                </div>
                               </div>
-
-                              <div className="mt-2 grid gap-3 md:grid-cols-4">
-                                {/* SKU */}
-                                <div className="md:col-span-1">
-                                  <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                                    SKU
-                                  </label>
-                                  <input
-                                    type="text"
-                                    value={it.sku}
-                                    onChange={(e) =>
-                                      handleItemChange(
-                                        it.id,
-                                        "sku",
-                                        e.target.value
-                                      )
-                                    }
-                                    className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-900 focus:border-rose-500 focus:outline-none focus:ring-2 focus:ring-rose-500/20"
-                                  />
-                                </div>
-
-                                {/* Nombre referencia */}
-                                <div className="md:col-span-2">
-                                  <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                                    Nombre (opcional)
-                                  </label>
-                                  <input
-                                    type="text"
-                                    value={it.nombre}
-                                    onChange={(e) =>
-                                      handleItemChange(
-                                        it.id,
-                                        "nombre",
-                                        e.target.value
-                                      )
-                                    }
-                                    placeholder="Solo referencia visual."
-                                    className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-rose-500 focus:outline-none focus:ring-2 focus:ring-rose-500/20"
-                                  />
-                                </div>
-
-                                {/* Cantidad */}
-                                <div className="md:col-span-1">
-                                  <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                                    Cantidad
-                                  </label>
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    value={it.cantidad}
-                                    onChange={(e) =>
-                                      handleItemChange(
-                                        it.id,
-                                        "cantidad",
-                                        e.target.value
-                                      )
-                                    }
-                                    className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-900 focus:border-rose-500 focus:outline-none focus:ring-2 focus:ring-rose-500/20"
-                                  />
-                                </div>
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
 
