@@ -88,10 +88,13 @@ model Bodega {
 }
 
 model Proyecto {
-  id          Int                 @id @default(autoincrement())
-  nombre      String              @unique
-  codigo      String?             @unique
-  activo      Boolean             @default(true)
+  id            Int      @id @default(autoincrement())
+  nombre        String   @unique
+  codigo        String?  @unique
+  descripcion   String?
+  activo        Boolean  @default(true)
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
 
   movimientos MovimientoProyecto[]
 }

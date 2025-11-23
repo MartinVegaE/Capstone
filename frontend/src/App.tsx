@@ -11,7 +11,7 @@ import LoginPage from "./pages/Login";
 import DashboardPage from "./pages/Dashboard";
 import { useAuth } from "./app/AuthContext";
 import DevolucionesProveedorPage from "./pages/DevolucionesProveedor";
-
+import CentroCostosPage from "./pages/CentroCostos";
 import RetornosProyectoPage from "./pages/RetornosProyecto";
 import ProveedoresPage from "./pages/Proveedores";
 
@@ -57,6 +57,7 @@ export default function App() {
 
             {/* Proyectos */}
             <Route path="/proyectos/retornos" element={<RetornosProyectoPage />} />
+            <Route path="/centros-costo" element={<CentroCostosPage />} />
 
             {/* Devoluciones a proveedor */}
             <Route

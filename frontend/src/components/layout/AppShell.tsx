@@ -61,18 +61,30 @@ export default function AppShell({ children }: AppShellProps) {
             >
               <span className="text-base">📦</span>
               <span>Inventario</span>
-              </NavLink>
-              <NavLink
-                to="/proveedores"
-                className={({ isActive }) =>
-                  `${baseLink} ${isActive ? activeLink : inactiveLink}`
-                }>
+            </NavLink>
+
+            <NavLink
+              to="/proveedores"
+              className={({ isActive }) =>
+                `${baseLink} ${isActive ? activeLink : inactiveLink}`
+              }
+            >
               <span className="text-base">👥</span>
               <span>Proveedores</span>
-              </NavLink>
+            </NavLink>
 
+            {/* 🔹 Nuevo: Centros de costo / proyectos */}
+            <NavLink
+              to="/centros-costo"
+              className={({ isActive }) =>
+                `${baseLink} ${isActive ? activeLink : inactiveLink}`
+              }
+            >
+              <span className="text-base">📂</span>
+              <span>Centros de costo</span>
+            </NavLink>
 
-            {/* 🔧 Si después quieres más menús “grandes”, agrégalos aquí */}
+            {/* Si después quieres más menús “grandes”, agrégalos aquí */}
             {/*
             <NavLink
               to="/reportes"
@@ -123,7 +135,6 @@ export default function AppShell({ children }: AppShellProps) {
                   <span className="text-sm">📥</span>
                   <span>Ingresos de compra</span>
                 </NavLink>
-                
 
                 {/* Salidas y retornos de proyecto (egresos) */}
                 <NavLink
@@ -173,7 +184,8 @@ export default function AppShell({ children }: AppShellProps) {
               Panel de inventario
             </h1>
             <p className="text-xs text-slate-500 md:text-sm">
-              Control de stock, PPP y flujos entre bodegas, proyectos y proveedores.
+              Control de stock, PPP y flujos entre bodegas, proyectos y
+              proveedores.
             </p>
           </div>
 

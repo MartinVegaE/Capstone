@@ -454,17 +454,34 @@ app.put("/productos/:id", async (req, res) => {
 // ELIMINAR producto
 app.delete("/productos/:id", async (req, res) => {
   const id = Number(req.params.id);
-  if (!Number.isFinite(id)) {
+  if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: "id inválido" });
   }
+
   try {
-    await prisma.producto.delete({ where: { id } });
-    res.status(204).send();
-  } catch (e) {
-    res.status(400).json({ error: String(e.message || e) });
+    await prisma.producto.delete({
+      where: { id },
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    // Caso típico: P2003 = constraint de FK
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2003"
+    ) {
+      return res.status(409).json({
+        error:
+          "No se puede eliminar el producto porque tiene movimientos asociados (ingresos, salidas o devoluciones).",
+      });
+    }
+
+    console.error("Error eliminando producto:", err);
+    return res
+      .status(500)
+      .json({ error: "Error interno al eliminar el producto." });
   }
 });
-
 // Actualizar SOLO stock (no PPP)
 app.patch("/productos/:id", async (req, res) => {
   const id = Number(req.params.id);
@@ -602,6 +619,7 @@ app.get("/movimientos", async (req, res) => {
    ========================= */
 
 // LISTAR ingresos
+// GET /ingresos
 app.get("/ingresos", async (req, res) => {
   try {
     const { q = "", page = "1", pageSize = "10" } = req.query;
@@ -612,12 +630,36 @@ app.get("/ingresos", async (req, res) => {
 
     const where = {};
 
+    // Filtro por texto (proveedor.nombre, numeroDocumento, observacion)
     if (typeof q === "string" && q.trim() !== "") {
       const query = q.trim();
+
       where.OR = [
-        { proveedor: { contains: query, mode: "insensitive" } },
-        { documento: { contains: query, mode: "insensitive" } },
-        { observacion: { contains: query, mode: "insensitive" } },
+        // nombre del proveedor (relación 1-a-1)
+        {
+          proveedor: {
+            is: {
+              nombre: {
+                contains: query,
+                mode: "insensitive",
+              },
+            },
+          },
+        },
+        // número de documento
+        {
+          numeroDocumento: {
+            contains: query,
+            mode: "insensitive",
+          },
+        },
+        // observación
+        {
+          observacion: {
+            contains: query,
+            mode: "insensitive",
+          },
+        },
       ];
     }
 
@@ -628,6 +670,7 @@ app.get("/ingresos", async (req, res) => {
         skip,
         take: sizeNumber,
         include: {
+          proveedor: true, // para poder usar proveedor.nombre
           items: {
             include: {
               producto: {
@@ -642,11 +685,15 @@ app.get("/ingresos", async (req, res) => {
 
     const data = ingresos.map((ing) => ({
       id: ing.id,
-      proveedor: ing.proveedor ?? "",
-      documento: ing.documento ?? "",
+      // 👇 lo que muestra la columna PROVEEDOR en el front
+      proveedor: ing.proveedor ? ing.proveedor.nombre : "",
+      // 👇 el front arma el texto del documento con estos 2 campos
+      tipoDocumento: ing.tipoDocumento,         // FACTURA | GUIA | NC
+      numeroDocumento: ing.numeroDocumento,     // string
       observacion: ing.observacion ?? "",
       fecha: ing.fecha.toISOString(),
-      estado: "Confirmado",
+      estado: "Confirmado", // por ahora fijo
+
       items: ing.items.map((it) => ({
         sku: it.producto?.sku ?? "",
         cantidad: it.cantidad,
@@ -660,9 +707,13 @@ app.get("/ingresos", async (req, res) => {
     res.json({ data, total });
   } catch (e) {
     console.error("[GET /ingresos] Error:", e);
-    res.status(500).json({ error: e?.message || String(e) });
+    res.status(500).json({
+      error: e && e.message ? e.message : String(e),
+    });
   }
 });
+
+
 
 // EDITAR cabecera de ingreso (simple)
 app.put("/ingresos/:id", async (req, res) => {
@@ -2177,6 +2228,231 @@ app.get("/categorias", async (_req, res) => {
   }
 });
 
+app.get("/proyectos", async (req, res) => {
+  try {
+    const { q = "", soloActivos = "0" } = req.query;
+
+    const where = {};
+
+    if (typeof q === "string" && q.trim() !== "") {
+      const query = q.trim();
+      where.OR = [
+        { nombre: { contains: query, mode: "insensitive" } },
+        { codigo: { contains: query, mode: "insensitive" } },
+        { descripcion: { contains: query, mode: "insensitive" } },
+      ];
+    }
+
+    if (String(soloActivos) === "1") {
+      where.activo = true;
+    }
+
+    const proyectos = await prisma.proyecto.findMany({
+      where,
+      orderBy: [
+        { activo: "desc" }, // activos primero
+        { nombre: "asc" },
+      ],
+      include: {
+        _count: {
+          select: { movimientos: true },
+        },
+      },
+    });
+
+    const data = proyectos.map((p) => ({
+      id: p.id,
+      nombre: p.nombre,
+      codigo: p.codigo,
+      descripcion: p.descripcion,
+      activo: p.activo,
+      creadoEn: p.creadoEn.toISOString(),
+      actualizadoEn: p.actualizadoEn.toISOString(),
+      movimientosCount: p._count?.movimientos ?? 0,
+    }));
+
+    res.json(data);
+  } catch (e) {
+    console.error("[GET /proyectos] Error:", e);
+    res.status(500).json({
+      error: e && e.message ? e.message : String(e),
+    });
+  }
+});
+
+/**
+ * GET /proyectos/:id
+ */
+app.get("/proyectos/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res
+        .status(400)
+        .json({ error: "El id debe ser un número entero válido" });
+    }
+
+    const p = await prisma.proyecto.findUnique({
+      where: { id },
+      include: {
+        _count: { select: { movimientos: true } },
+      },
+    });
+
+    if (!p) {
+      return res.status(404).json({ error: "Proyecto no encontrado" });
+    }
+
+    res.json({
+      id: p.id,
+      nombre: p.nombre,
+      codigo: p.codigo,
+      descripcion: p.descripcion,
+      activo: p.activo,
+      creadoEn: p.creadoEn.toISOString(),
+      actualizadoEn: p.actualizadoEn.toISOString(),
+      movimientosCount: p._count?.movimientos ?? 0,
+    });
+  } catch (e) {
+    console.error("[GET /proyectos/:id] Error:", e);
+    res.status(500).json({
+      error: e && e.message ? e.message : String(e),
+    });
+  }
+});
+
+/**
+ * POST /proyectos
+ */
+app.post("/proyectos", async (req, res) => {
+  try {
+    const { nombre, codigo, descripcion, activo } = req.body || {};
+
+    if (!nombre || !String(nombre).trim()) {
+      return res
+        .status(400)
+        .json({ error: "El nombre del proyecto es obligatorio" });
+    }
+
+    const creado = await prisma.proyecto.create({
+      data: {
+        nombre: String(nombre).trim(),
+        codigo: normalizeNullableString(codigo),
+        descripcion: normalizeNullableString(descripcion),
+        activo: activo === undefined ? true : Boolean(activo),
+      },
+    });
+
+    res.status(201).json(creado);
+  } catch (e) {
+    console.error("[POST /proyectos] Error:", e);
+
+    // P2002 = unique constraint violation
+    if (e && e.code === "P2002") {
+      return res.status(409).json({
+        error:
+          "Ya existe un proyecto con ese nombre o código. Ambos deben ser únicos.",
+      });
+    }
+
+    res.status(500).json({
+      error: e && e.message ? e.message : String(e),
+    });
+  }
+});
+
+/**
+ * PUT /proyectos/:id
+ */
+app.put("/proyectos/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res
+        .status(400)
+        .json({ error: "El id debe ser un número entero válido" });
+    }
+
+    const { nombre, codigo, descripcion, activo } = req.body || {};
+
+    const data = {};
+
+    if (nombre !== undefined) {
+      if (!String(nombre).trim()) {
+        return res.status(400).json({
+          error: "El nombre del proyecto no puede estar vacío",
+        });
+      }
+      data.nombre = String(nombre).trim();
+    }
+
+    if (codigo !== undefined) {
+      data.codigo = normalizeNullableString(codigo);
+    }
+
+    if (descripcion !== undefined) {
+      data.descripcion = normalizeNullableString(descripcion);
+    }
+
+    if (activo !== undefined) {
+      data.activo = Boolean(activo);
+    }
+
+    const actualizado = await prisma.proyecto.update({
+      where: { id },
+      data,
+    });
+
+    res.json(actualizado);
+  } catch (e) {
+    console.error("[PUT /proyectos/:id] Error:", e);
+
+    if (e && e.code === "P2002") {
+      return res.status(409).json({
+        error:
+          "Ya existe un proyecto con ese nombre o código. Ambos deben ser únicos.",
+      });
+    }
+
+    res.status(500).json({
+      error: e && e.message ? e.message : String(e),
+    });
+  }
+});
+
+/**
+ * DELETE /proyectos/:id
+ */
+app.delete("/proyectos/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res
+        .status(400)
+        .json({ error: "El id debe ser un número entero válido" });
+    }
+
+    await prisma.proyecto.delete({
+      where: { id },
+    });
+
+    res.status(204).send();
+  } catch (e) {
+    console.error("[DELETE /proyectos/:id] Error:", e);
+
+    // P2003 = FK constraint (movimientos asociados)
+    if (e && e.code === "P2003") {
+      return res.status(409).json({
+        error:
+          "No se puede eliminar el proyecto porque tiene movimientos asociados.",
+      });
+    }
+
+    res.status(500).json({
+      error: e && e.message ? e.message : String(e),
+    });
+  }
+});
 
 /* =========================
    Start server

@@ -4,7 +4,7 @@ import React, {
   useMemo,
   useState,
   useEffect,
-  FormEvent,
+  type FormEvent,
 } from "react";
 import { Dialog, Transition } from "@headlessui/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -34,6 +34,9 @@ type Producto = {
   codigoBarras?: string | null;
   proveedorId?: number | null;
   imagenUrl?: string | null;
+
+  // PPP real desde backend (model Producto.ppp Decimal)
+  ppp?: number | string | null;
 };
 
 type Proveedor = {
@@ -76,12 +79,12 @@ type ProductFormState = {
    Constantes + helpers
    ========================= */
 
-// EXT => Extinción (corregido)
+// EXT => Extinción
 const CATEGORY_OPTIONS = [
   { code: "EXT", label: "Extinción" },
   { code: "DET", label: "Detección" },
-  { code: "ACF", label: "Accesorios fijos" },
-  { code: "FUN", label: "Otros / Funcionales" },
+  { code: "ACF", label: "Activos fijos" },
+  { code: "FUN", label: "Fungibles" },
 ];
 
 const PLACEHOLDER_IMG =
@@ -98,19 +101,52 @@ function buildInitialSku(categoriaCodigo: string): string {
   return `${categoriaCodigo}-0001`;
 }
 
+// Normaliza la etiqueta de categoría del producto
 function getCategoriaLabelFromProducto(p: Producto): string {
-  const fromBackend =
-    (p.categoria ?? p.categoriaNombre ?? "").trim();
-  if (fromBackend) return fromBackend;
+  const raw = (p.categoria ?? p.categoriaNombre ?? "").trim();
 
-  const code =
-    (p.categoriaCodigo ?? inferCategoriaFromSku(p.sku || "")).trim();
-  if (code) {
-    const opt = CATEGORY_OPTIONS.find((c) => c.code === code);
-    if (opt) return opt.label;
+  if (raw) {
+    const lower = raw.toLowerCase();
+
+    // Corrige errores típicos
+    if (lower.startsWith("act") && lower.includes("fij")) {
+      return "Activos fijos";
+    }
+    if (lower.includes("fungib")) {
+      return "Fungibles";
+    }
+    if (lower.includes("extinc")) {
+      return "Extinción";
+    }
+    if (lower.includes("detec")) {
+      return "Detección";
+    }
+
+    return raw;
   }
 
-  return "Sin categoría";
+  const code = (
+    p.categoriaCodigo ?? inferCategoriaFromSku(p.sku || "")
+  ).toUpperCase();
+  const opt = CATEGORY_OPTIONS.find((c) => c.code === code);
+  return opt ? opt.label : "Sin categoría";
+}
+
+function money(n: number) {
+  return n.toLocaleString("es-CL", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  });
+}
+
+// Normalizar PPP a número (o null) por si viene como string de Prisma.Decimal
+function normalizePPP(raw: number | string | null | undefined): number | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) ? raw : null;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 const emptyForm: ProductFormState = {
@@ -155,6 +191,8 @@ export default function ProductsPage() {
   >("");
   const [savingSubcat, setSavingSubcat] = useState(false);
   const [subcatError, setSubcatError] = useState<string | null>(null);
+  const [editingSubcat, setEditingSubcat] =
+    useState<Subcategoria | null>(null);
 
   // -------------------------
   // Datos: productos + proveedores + categorías + subcategorías
@@ -167,7 +205,11 @@ export default function ProductsPage() {
     queryKey: ["productos"],
     queryFn: async () => {
       const res = await http.get<Producto[]>("/productos");
-      return res.data;
+      // Aseguramos que ppp sea numérico cuando sea posible
+      return res.data.map((p) => ({
+        ...p,
+        ppp: normalizePPP(p.ppp),
+      }));
     },
   });
 
@@ -479,7 +521,7 @@ export default function ProductsPage() {
   }
 
   // -------------------------
-  // Subcategorías: helpers
+  // Subcategorías: helpers y CRUD
   // -------------------------
 
   // Al abrir el modal, seleccionar una categoría por defecto si hay
@@ -490,6 +532,20 @@ export default function ProductsPage() {
       setSubcatCategoriaId(categorias[0].id);
     }
   }, [isSubcatOpen, categorias, subcatCategoriaId]);
+
+  function resetSubcatForm() {
+    setSubcatNombre("");
+    setSubcatError(null);
+    setSubcatCategoriaId("");
+    setEditingSubcat(null);
+  }
+
+  function startEditSubcat(sc: Subcategoria) {
+    setEditingSubcat(sc);
+    setSubcatNombre(sc.nombre);
+    setSubcatCategoriaId(sc.categoriaId);
+    setSubcatError(null);
+  }
 
   async function handleSubmitSubcategoria(e: FormEvent) {
     e.preventDefault();
@@ -516,22 +572,58 @@ export default function ProductsPage() {
     setSavingSubcat(true);
     setSubcatError(null);
     try {
-      await http.post("/subcategorias", {
-        nombre,
-        categoriaId: categoriaIdNumber,
-      });
-      setSubcatNombre("");
+      if (editingSubcat) {
+        // MODO EDICIÓN
+        await http.put(`/subcategorias/${editingSubcat.id}`, {
+          nombre,
+          categoriaId: categoriaIdNumber,
+        });
+      } else {
+        // MODO CREACIÓN
+        await http.post("/subcategorias", {
+          nombre,
+          categoriaId: categoriaIdNumber,
+        });
+      }
+
+      resetSubcatForm();
+
       await queryClient.invalidateQueries({
         queryKey: ["subcategorias"],
       });
     } catch (err: any) {
-      console.error("Error creando subcategoría:", err);
+      console.error("Error creando/actualizando subcategoría:", err);
       setSubcatError(
         err?.response?.data?.error ??
-          "Error creando la subcategoría. Revisa la consola."
+          "Error creando/actualizando la subcategoría. Revisa la consola."
       );
     } finally {
       setSavingSubcat(false);
+    }
+  }
+
+  async function handleDeleteSubcategoria(sc: Subcategoria) {
+    const ok = window.confirm(
+      `¿Seguro que quieres eliminar la subcategoría "${sc.nombre}"?`
+    );
+    if (!ok) return;
+
+    try {
+      await http.delete(`/subcategorias/${sc.id}`);
+
+      if (editingSubcat?.id === sc.id) {
+        resetSubcatForm();
+      }
+
+      await queryClient.invalidateQueries({
+        queryKey: ["subcategorias"],
+      });
+    } catch (err: any) {
+      console.error("Error eliminando subcategoría:", err);
+      alert(
+        err?.response?.data?.error ??
+          "Error eliminando la subcategoría. Revisa la consola."
+      );
     }
   }
 
@@ -557,8 +649,8 @@ export default function ProductsPage() {
               Inventario de productos
             </h2>
             <p className="text-sm text-slate-500">
-              Mantén el catálogo al día, con proveedor e imagen de
-              referencia.
+              Mantén el catálogo al día, con proveedor, PPP (precio
+              promedio ponderado) y valor total de stock.
             </p>
           </div>
           <div className="flex w-full justify-start gap-2 sm:w-auto sm:justify-end">
@@ -622,6 +714,12 @@ export default function ProductsPage() {
                   Stock
                 </th>
                 <th className="hidden px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500 sm:table-cell">
+                  Costo prom. (PPP)
+                </th>
+                <th className="hidden px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500 sm:table-cell">
+                  Total aprox.
+                </th>
+                <th className="hidden px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500 sm:table-cell">
                   Stock mín.
                 </th>
                 <th className="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -633,16 +731,16 @@ export default function ProductsPage() {
               {loadingProductos ? (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={8}
                     className="px-4 py-6 text-center text-sm text-slate-500"
                   >
                     Cargando productos...
                   </td>
                 </tr>
-              ) : filteredProducts.length === 0 ? (
+              ) : !filteredProducts || filteredProducts.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={8}
                     className="px-4 py-6 text-center text-sm text-slate-500"
                   >
                     No hay productos que coincidan con el filtro.
@@ -662,6 +760,16 @@ export default function ProductsPage() {
                     : undefined;
                   const subcatName =
                     p.subcategoriaNombre ?? subcatObj?.nombre ?? "";
+
+                  const ppp = normalizePPP(p.ppp ?? null);
+                  const hasPPP =
+                    typeof ppp === "number" &&
+                    Number.isFinite(ppp) &&
+                    ppp >= 0;
+                  const totalAprox =
+                    hasPPP && typeof p.stock === "number"
+                      ? p.stock * ppp
+                      : null;
 
                   return (
                     <tr
@@ -706,6 +814,16 @@ export default function ProductsPage() {
                       <td className="whitespace-nowrap px-3 py-3 text-right text-sm text-slate-900">
                         {p.stock}
                       </td>
+                      <td className="hidden whitespace-nowrap px-3 py-3 text-right text-sm text-slate-900 sm:table-cell">
+                        {hasPPP && ppp !== null
+                          ? `$${money(ppp)}`
+                          : "—"}
+                      </td>
+                      <td className="hidden whitespace-nowrap px-3 py-3 text-right text-sm text-slate-900 sm:table-cell">
+                        {totalAprox != null
+                          ? `$${money(totalAprox)}`
+                          : "—"}
+                      </td>
                       <td className="hidden whitespace-nowrap px-3 py-3 text-right text-sm text-slate-600 sm:table-cell">
                         {p.stockMinimo ?? 0}
                       </td>
@@ -720,7 +838,9 @@ export default function ProductsPage() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => handleDeleteProduct(p)}
+                            onClick={() =>
+                              handleDeleteProduct(p)
+                            }
                             disabled={deletingId === p.id}
                             className="rounded-full border border-red-100 px-3 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
                           >
@@ -928,9 +1048,12 @@ export default function ProductsPage() {
                                       onClick={() => {
                                         setForm((prev) => ({
                                           ...prev,
-                                          proveedorId: prov.id,
+                                          proveedorId:
+                                            prov.id,
                                         }));
-                                        setProveedorSearch("");
+                                        setProveedorSearch(
+                                          ""
+                                        );
                                       }}
                                       className="flex w-full flex-col items-start px-3 py-2 text-left text-sm hover:bg-slate-50"
                                     >
@@ -1141,10 +1264,23 @@ export default function ProductsPage() {
                       almacenan normalizadas en la base de datos y se
                       pueden reutilizar en productos.
                     </p>
+                    {editingSubcat && (
+                      <p className="mt-1 text-[11px] text-rose-600">
+                        Editando subcategoría:{" "}
+                        <strong>{editingSubcat.nombre}</strong>.
+                        Usa <strong>“Guardar cambios”</strong> para
+                        actualizar o{" "}
+                        <strong>“Cancelar edición”</strong> para
+                        volver al modo creación.
+                      </p>
+                    )}
                   </div>
                   <button
                     type="button"
-                    onClick={() => setIsSubcatOpen(false)}
+                    onClick={() => {
+                      setIsSubcatOpen(false);
+                      resetSubcatForm();
+                    }}
                     className="text-slate-400 hover:text-slate-600"
                   >
                     ✕
@@ -1218,13 +1354,12 @@ export default function ProductsPage() {
                   <div className="flex justify-end gap-2">
                     <button
                       type="button"
-                      onClick={() => {
-                        setSubcatNombre("");
-                        setSubcatError(null);
-                      }}
+                      onClick={resetSubcatForm}
                       className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
                     >
-                      Limpiar
+                      {editingSubcat
+                        ? "Cancelar edición"
+                        : "Limpiar"}
                     </button>
                     <button
                       type="submit"
@@ -1237,6 +1372,8 @@ export default function ProductsPage() {
                     >
                       {savingSubcat
                         ? "Guardando..."
+                        : editingSubcat
+                        ? "Guardar cambios"
                         : "Agregar subcategoría"}
                     </button>
                   </div>
@@ -1275,9 +1412,30 @@ export default function ProductsPage() {
                             {list.map((sc) => (
                               <li
                                 key={sc.id}
-                                className="rounded-full border border-slate-200 px-2 py-0.5 text-[11px] text-slate-700"
+                                className="flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px]"
                               >
-                                {sc.nombre}
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    startEditSubcat(sc)
+                                  }
+                                  className="text-slate-700 hover:underline"
+                                  title="Editar subcategoría"
+                                >
+                                  {sc.nombre}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleDeleteSubcategoria(
+                                      sc
+                                    )
+                                  }
+                                  className="text-red-500 hover:text-red-600"
+                                  title="Eliminar subcategoría"
+                                >
+                                  ✕
+                                </button>
                               </li>
                             ))}
                           </ul>
