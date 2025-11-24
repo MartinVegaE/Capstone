@@ -3,8 +3,7 @@ import React, {
   Fragment,
   useMemo,
   useState,
-  useEffect,
-  FormEvent,
+  type FormEvent,
 } from "react";
 import { Dialog, Transition } from "@headlessui/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -85,7 +84,6 @@ export default function CentroCostosPage() {
     data: proyectos,
     isLoading,
     error,
-    refetch,
   } = useQuery({
     queryKey: ["proyectos", { soloActivos }],
     queryFn: async () => {
@@ -275,13 +273,7 @@ export default function CentroCostosPage() {
               <input
                 type="checkbox"
                 checked={soloActivos}
-                onChange={(e) => {
-                  setSoloActivos(e.target.checked);
-                  // refrescamos remoto al cambiar
-                  setTimeout(() => {
-                    refetch();
-                  }, 0);
-                }}
+                onChange={(e) => setSoloActivos(e.target.checked)}
                 className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
               />
               <span>Mostrar solo activos</span>

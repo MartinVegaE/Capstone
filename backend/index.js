@@ -121,6 +121,7 @@ app.post("/login", async (req, res) => {
 
     const emailNorm = String(email).trim().toLowerCase();
 
+    // 👇 SIN `mode`, y usando findUnique porque email es @unique
     const user = await prisma.user.findUnique({
       where: { email: emailNorm },
     });
@@ -130,7 +131,8 @@ app.post("/login", async (req, res) => {
       return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
-    const stored = user.passwordHash ?? user.password ?? null;
+    // Compatibilidad: passwordHash nuevo / password viejo (si existe)
+    const stored = user.passwordHash || user.password || null;
 
     if (!stored) {
       console.error("[POST /login] Usuario sin password en BD");
@@ -145,8 +147,10 @@ app.post("/login", async (req, res) => {
       stored.startsWith("$2") &&
       stored.length > 30
     ) {
+      // bcrypt
       ok = await bcrypt.compare(String(password), stored);
     } else {
+      // texto plano (para pruebas)
       ok = String(password) === String(stored);
     }
 
@@ -155,7 +159,7 @@ app.post("/login", async (req, res) => {
       return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
-    const role = user.role ?? user.rol ?? "WAREHOUSE";
+    const role = user.role || user.rol || "WAREHOUSE";
 
     return res.json({
       email: user.email,
@@ -2451,6 +2455,214 @@ app.delete("/proyectos/:id", async (req, res) => {
     res.status(500).json({
       error: e && e.message ? e.message : String(e),
     });
+  }
+});
+
+// utils opcional
+function toStringOrNull(value) {
+  if (value === undefined || value === null) return null;
+  const s = String(value).trim();
+  return s === "" ? null : s;
+}
+
+// =======================
+// USUARIOS (CRUD simple)
+// =======================
+
+// Listar usuarios
+app.get("/usuarios", async (_req, res) => {
+  try {
+    const list = await prisma.user.findMany({
+      orderBy: { id: "asc" },
+      include: {
+        worker: {
+          select: {
+            id: true,
+            fullName: true,
+            rut: true,
+          },
+        },
+      },
+    });
+
+    res.json(
+      list.map((u) => ({
+        id: u.id,
+        email: u.email,
+        role: u.role,
+        isActive: u.isActive,
+        createdAt: u.createdAt,
+        updatedAt: u.updatedAt,
+        worker: u.worker,
+      }))
+    );
+  } catch (e) {
+    console.error("[GET /usuarios] Error:", e);
+    res
+      .status(500)
+      .json({ error: "Error al listar usuarios" });
+  }
+});
+
+// Crear usuario
+app.post("/usuarios", async (req, res) => {
+  try {
+    const { email, role, isActive = true, password } = req.body || {};
+
+    if (!email || !role) {
+      return res
+        .status(400)
+        .json({ error: "Email y rol son obligatorios" });
+    }
+
+    if (!password || String(password).trim().length < 8) {
+      return res.status(400).json({
+        error:
+          "La contraseña es obligatoria y debe tener al menos 8 caracteres",
+      });
+    }
+
+    const emailNorm = String(email).trim().toLowerCase();
+
+    const existing = await prisma.user.findUnique({
+      where: { email: emailNorm },
+    });
+    if (existing) {
+      return res
+        .status(409)
+        .json({ error: "Ya existe un usuario con ese email" });
+    }
+
+    const passwordHash = await bcrypt.hash(
+      String(password),
+      10
+    );
+
+    const user = await prisma.user.create({
+      data: {
+        email: emailNorm,
+        role,
+        isActive: Boolean(isActive),
+        passwordHash,
+      },
+      include: {
+        worker: {
+          select: {
+            id: true,
+            fullName: true,
+            rut: true,
+          },
+        },
+      },
+    });
+
+    res.status(201).json({
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      isActive: user.isActive,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      worker: user.worker,
+    });
+  } catch (e) {
+    console.error("[POST /usuarios] Error:", e);
+    res
+      .status(500)
+      .json({ error: "Error al crear usuario" });
+  }
+});
+
+// Actualizar usuario (email/rol/estado y, opcionalmente, password)
+app.put("/usuarios/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res
+        .status(400)
+        .json({ error: "ID inválido" });
+    }
+
+    const { email, role, isActive, password } = req.body || {};
+
+    const data = {};
+
+    if (email !== undefined) {
+      data.email = String(email).trim().toLowerCase();
+    }
+    if (role !== undefined) {
+      data.role = role;
+    }
+    if (typeof isActive === "boolean") {
+      data.isActive = isActive;
+    }
+
+    if (password && String(password).trim().length > 0) {
+      if (String(password).length < 8) {
+        return res.status(400).json({
+          error:
+            "La nueva contraseña debe tener al menos 8 caracteres",
+        });
+      }
+      data.passwordHash = await bcrypt.hash(
+        String(password),
+        10
+      );
+    }
+
+    const user = await prisma.user.update({
+      where: { id },
+      data,
+      include: {
+        worker: {
+          select: {
+            id: true,
+            fullName: true,
+            rut: true,
+          },
+        },
+      },
+    });
+
+    res.json({
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      isActive: user.isActive,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      worker: user.worker,
+    });
+  } catch (e) {
+    console.error("[PUT /usuarios/:id] Error:", e);
+    if (e.code === "P2002") {
+      return res.status(409).json({
+        error: "Ya existe otro usuario con ese email",
+      });
+    }
+    res
+      .status(500)
+      .json({ error: "Error al actualizar usuario" });
+  }
+});
+
+// Eliminar usuario
+app.delete("/usuarios/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res
+        .status(400)
+        .json({ error: "ID inválido" });
+    }
+
+    await prisma.user.delete({ where: { id } });
+    res.status(204).send();
+  } catch (e) {
+    console.error("[DELETE /usuarios/:id] Error:", e);
+    res
+      .status(500)
+      .json({ error: "Error al eliminar usuario" });
   }
 });
 

@@ -14,6 +14,7 @@ import DevolucionesProveedorPage from "./pages/DevolucionesProveedor";
 import CentroCostosPage from "./pages/CentroCostos";
 import RetornosProyectoPage from "./pages/RetornosProyecto";
 import ProveedoresPage from "./pages/Proveedores";
+import UsuariosPage from "./pages/Usuarios";
 
 // 404
 function NotFound() {
@@ -48,6 +49,7 @@ export default function App() {
             {/* Panel principal */}
             <Route path="/" element={<DashboardPage />} />
             <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/usuarios" element={<UsuariosPage />} />
 
             {/* Inventario */}
             <Route path="/productos" element={<ProductsPage />} />
