@@ -66,7 +66,7 @@ export default function DashboardPage() {
           title="Proyectos y obras"
           description="Gestiona las salidas hacia obra y los retornos al inventario para mantener trazabilidad por proyecto."
           primaryLink={{
-            to: "/proyectos/salidas",
+            to: "/movimientos",
             label: "Salidas a proyectos",
           }}
           secondaryLinks={[
