@@ -197,114 +197,123 @@ app.get("/productos", async (_req, res) => {
 
 // CREAR producto (con categoría, subcategoría opcional y proveedor obligatorio)
 app.post("/productos", async (req, res) => {
-  const b = req.body || {};
-  console.log("[POST /productos] body:", b);
-
-  const skuRaw =
-    b.sku ?? b.codigo ?? b.code ?? b.skuProducto ?? b.skuProductoNuevo;
-  const nombreRaw =
-    b.nombre ?? b.name ?? b.descripcion ?? b.description ?? b.titulo;
-
-  if (!skuRaw || !nombreRaw) {
-    console.warn("[POST /productos] Falta sku o nombre");
-    return res
-      .status(400)
-      .json({ error: "sku y nombre son obligatorios" });
-  }
-
-  // IDs de relaciones
-  const categoriaId = Number(b.categoriaId);
-  const proveedorId = Number(b.proveedorId);
-  const subcategoriaId =
-    b.subcategoriaId != null ? Number(b.subcategoriaId) : undefined;
-
-  if (!Number.isFinite(categoriaId)) {
-    return res
-      .status(400)
-      .json({ error: "categoriaId es obligatorio y debe ser numérico." });
-  }
-  if (!Number.isFinite(proveedorId)) {
-    return res
-      .status(400)
-      .json({ error: "proveedorId es obligatorio y debe ser numérico." });
-  }
-  if (subcategoriaId !== undefined && !Number.isFinite(subcategoriaId)) {
-    return res
-      .status(400)
-      .json({ error: "subcategoriaId debe ser numérico si se envía." });
-  }
-
-  const stockRaw = b.stock ?? b.stockInicial ?? b.stockTotal ?? 0;
-  const stock = Number(stockRaw);
-  const stockMinimoRaw = b.stockMinimo ?? b.stockCritico ?? 0;
-  const stockMinimo = Number(stockMinimoRaw);
-
-  if (!Number.isFinite(stock) || stock < 0) {
-    console.warn("[POST /productos] Stock inválido:", stockRaw);
-    return res
-      .status(400)
-      .json({ error: "stock debe ser número >= 0" });
-  }
-  if (!Number.isFinite(stockMinimo) || stockMinimo < 0) {
-    console.warn("[POST /productos] stockMinimo inválido:", stockMinimoRaw);
-    return res
-      .status(400)
-      .json({ error: "stockMinimo debe ser número >= 0" });
-  }
-
-  const dataBase = {
-    sku: String(skuRaw).trim(),
-    nombre: String(nombreRaw).trim(),
-    descripcion:
-      b.descripcion != null && String(b.descripcion).trim() !== ""
-        ? String(b.descripcion).trim()
-        : null,
-    ubicacion:
-      b.ubicacion != null && String(b.ubicacion).trim() !== ""
-        ? String(b.ubicacion).trim()
-        : null,
-    codigoBarras:
-      b.codigoBarras != null && String(b.codigoBarras).trim() !== ""
-        ? String(b.codigoBarras).trim()
-        : null,
-    stock,
-    stockMinimo,
-    imagenUrl:
-      b.imagenUrl != null && String(b.imagenUrl).trim() !== ""
-        ? String(b.imagenUrl).trim()
-        : null,
-  };
-
-  console.log("[POST /productos] data a crear (base):", dataBase);
-
   try {
-    const creado = await prisma.producto.create({
+    console.log("[POST /productos] body:", req.body);
+
+    const {
+      sku,
+      nombre,
+      descripcion,
+      categoriaId,
+      categoriaCodigo,
+      subcategoriaId,
+      proveedorId,
+      stock,
+      stockMinimo,
+      ubicacion,
+      codigoBarras,
+      imagenUrl,
+    } = req.body || {};
+
+    if (!sku || !nombre) {
+      return res.status(400).json({
+        error: "SKU y nombre son obligatorios",
+      });
+    }
+
+    // ==== Resolver categoría (por id o por código) ====
+    let categoriaIdNum = null;
+
+    if (categoriaId !== undefined && categoriaId !== null && categoriaId !== "") {
+      const tmp = Number(categoriaId);
+      if (Number.isNaN(tmp) || tmp <= 0) {
+        return res
+          .status(400)
+          .json({ error: "categoriaId es obligatorio y debe ser numérico" });
+      }
+      categoriaIdNum = tmp;
+    } else if (categoriaCodigo) {
+      const cat = await prisma.categoria.findUnique({
+        where: { codigo: String(categoriaCodigo) },
+      });
+
+      if (!cat) {
+        return res.status(400).json({
+          error: `No existe una categoría con código "${categoriaCodigo}". ` +
+            `Crea la categoría primero en el catálogo.`,
+        });
+      }
+
+      categoriaIdNum = cat.id;
+    } else {
+      return res.status(400).json({
+        error:
+          "Debes enviar categoriaId o categoriaCodigo para crear el producto.",
+      });
+    }
+
+    // ==== Subcategoría opcional ====
+    let subcategoriaIdNum = null;
+    if (subcategoriaId !== undefined && subcategoriaId !== null && subcategoriaId !== "") {
+      const tmp = Number(subcategoriaId);
+      if (Number.isNaN(tmp) || tmp <= 0) {
+        return res.status(400).json({
+          error: "subcategoriaId debe ser numérico",
+        });
+      }
+      subcategoriaIdNum = tmp;
+    }
+
+    // ==== Proveedor obligatorio ====
+    const proveedorIdNum = Number(proveedorId);
+    if (!proveedorIdNum || Number.isNaN(proveedorIdNum)) {
+      return res.status(400).json({
+        error: "proveedorId es obligatorio y debe ser numérico",
+      });
+    }
+
+    // ==== Stock / stock mínimo ====
+    const stockNum = stock !== undefined && stock !== null && stock !== ""
+      ? Number(stock)
+      : 0;
+    const stockMinNum =
+      stockMinimo !== undefined && stockMinimo !== null && stockMinimo !== ""
+        ? Number(stockMinimo)
+        : 0;
+
+    if (Number.isNaN(stockNum) || stockNum < 0) {
+      return res
+        .status(400)
+        .json({ error: "stock debe ser un número mayor o igual a 0" });
+    }
+    if (Number.isNaN(stockMinNum) || stockMinNum < 0) {
+      return res.status(400).json({
+        error: "stockMinimo debe ser un número mayor o igual a 0",
+      });
+    }
+
+    const nuevo = await prisma.producto.create({
       data: {
-        ...dataBase,
-        // 🔗 Relaciones
-        categoria: { connect: { id: categoriaId } },
-        proveedor: { connect: { id: proveedorId } },
-        ...(subcategoriaId !== undefined && {
-          subcategoria: { connect: { id: subcategoriaId } },
-        }),
+        sku: String(sku).trim(),
+        nombre: String(nombre).trim(),
+        descripcion: descripcion ? String(descripcion).trim() : null,
+        categoriaId: categoriaIdNum,
+        subcategoriaId: subcategoriaIdNum,
+        proveedorId: proveedorIdNum,
+        stock: stockNum,
+        stockMinimo: stockMinNum,
+        ubicacion: ubicacion ? String(ubicacion).trim() : null,
+        codigoBarras: codigoBarras ? String(codigoBarras).trim() : null,
+        imagenUrl: imagenUrl ? String(imagenUrl).trim() : null,
       },
     });
 
-    console.log("[POST /productos] creado:", creado);
-    res.status(201).json(creado);
+    return res.json({ ok: true, data: nuevo });
   } catch (e) {
-    console.error("[POST /productos] Error Prisma:", e);
-
-    if (e?.code === "P2002") {
-      const campo = e.meta?.target?.[0] || "campo único";
-      return res
-        .status(409)
-        .json({ error: `Ya existe un producto con ese ${campo}` });
-    }
-
-    res
-      .status(400)
-      .json({ error: e?.message || String(e) || "Error creando producto" });
+    console.error("[POST /productos] Error:", e);
+    return res
+      .status(500)
+      .json({ error: "Error interno al crear el producto" });
   }
 });
 
@@ -453,8 +462,6 @@ app.put("/productos/:id", async (req, res) => {
   }
 });
 
-
-
 // ELIMINAR producto
 app.delete("/productos/:id", async (req, res) => {
   const id = Number(req.params.id);
@@ -540,11 +547,205 @@ app.get("/productos/by-codigo/:code", async (req, res) => {
    Movimientos
    ========================= */
 
-// Stub para ajustes manuales futuros
+
+async function registrarRetorno(tx, params) {
+  const { productoId, cantidad, refTipo, refId } = params;
+
+  if (!productoId) {
+    throw new Error("productoId es obligatorio en registrarRetorno");
+  }
+  if (!cantidad || cantidad <= 0) {
+    throw new Error("cantidad debe ser mayor a 0 en registrarRetorno");
+  }
+  if (!refTipo) {
+    throw new Error("refTipo es obligatorio en registrarRetorno");
+  }
+
+  // 1) Traer producto
+  const prod = await tx.producto.findUnique({
+    where: { id: productoId },
+    select: { id: true, stock: true, ppp: true },
+  });
+
+  if (!prod) {
+    throw new Error(`Producto con id ${productoId} no existe`);
+  }
+
+  // 2) PPP antes/después (no cambia en un retorno)
+  const pppActual = prod.ppp ?? 0;
+
+  // 3) Registrar movimiento de stock (IN)
+  await tx.stockMovimiento.create({
+    data: {
+      productoId,
+      tipo: "IN",           // Enum MovimientoTipo.IN
+      cantidad,
+      costoUnitario: null,
+      pppAntes: pppActual,
+      pppDespues: pppActual,
+      refTipo,              // 👈 otra vez, valor que viene del caller
+      refId: refId ?? null,
+    },
+  });
+
+  // 4) Actualizar stock del producto
+  await tx.producto.update({
+    where: { id: productoId },
+    data: {
+      stock: prod.stock + cantidad,
+    },
+  });
+}
+
+module.exports = {
+  registrarSalida,
+  registrarRetorno,
+};
+
+// Helper genérico para obtener un proyecto a partir de varios formatos de entrada
+async function resolveProyecto(arg1, arg2) {
+  // Soportar tanto resolveProyecto(body) como resolveProyecto(tx, body)
+  const from = arg2 !== undefined ? arg2 : arg1;
+
+  let proyectoIdRaw;
+
+  if (from && typeof from === "object" && !Array.isArray(from)) {
+    if (from.proyectoId != null) {
+      proyectoIdRaw = from.proyectoId;
+    } else if (from.id != null) {
+      proyectoIdRaw = from.id;
+    } else if (from.proyecto && typeof from.proyecto === "object") {
+      // por compatibilidad: body.proyecto.id
+      proyectoIdRaw = from.proyecto.id;
+    } else {
+      proyectoIdRaw = undefined;
+    }
+  } else {
+    proyectoIdRaw = from;
+  }
+
+  const proyectoId = Number(proyectoIdRaw);
+
+  if (!Number.isFinite(proyectoId) || proyectoId <= 0) {
+    throw new Error("Proyecto inválido (ID incorrecto).");
+  }
+
+  const proyecto = await prisma.proyecto.findUnique({
+    where: { id: proyectoId },
+  });
+
+  if (!proyecto) {
+    throw new Error("El proyecto seleccionado no existe.");
+  }
+
+  return proyecto;
+}
+
+
+async function resolveBodegaInicial() {
+  // Por ahora usamos la primera bodega que exista.
+  // Si después tienes un flag "esPrincipal" o similar, se cambia aquí.
+  const bodega = await prisma.bodega.findFirst();
+
+  if (!bodega) {
+    throw new Error(
+      "No hay bodegas configuradas. Crea la bodega inicial en el módulo de bodegas."
+    );
+  }
+
+  return bodega;
+}
+
+
+
+// Stub para ajustes manuales futuros, ahora con validación y mensajes claros
 app.post("/movimientos", async (req, res) => {
-  console.log("[POST /movimientos] body:", req.body);
-  res.status(201).json({ ok: true });
+  try {
+    console.log("[POST /movimientos] body:", req.body);
+
+    const {
+      tipo,
+      proyectoId,
+      documento,
+      observacion,
+      items,
+    } = req.body || {};
+
+    // Validaciones básicas de payload
+    if (!tipo || typeof tipo !== "string") {
+      return res.status(400).json({
+        error:
+          "El campo 'tipo' es obligatorio (por ejemplo: 'SALIDA', 'ENTRADA', 'AJUSTE').",
+      });
+    }
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({
+        error:
+          "Debes enviar al menos un ítem en 'items', con SKU y cantidad mayor a 0.",
+      });
+    }
+
+    const cleanedItems = [];
+    for (const raw of items) {
+      const sku = (raw?.sku ?? "").trim();
+      const cantidadNum = Number(raw?.cantidad);
+
+      if (!sku) {
+        return res.status(400).json({
+          error:
+            "Todos los ítems deben tener un 'sku' no vacío.",
+        });
+      }
+      if (!Number.isFinite(cantidadNum) || cantidadNum <= 0) {
+        return res.status(400).json({
+          error:
+            "Todos los ítems deben tener una 'cantidad' numérica mayor a 0.",
+        });
+      }
+
+      cleanedItems.push({
+        sku,
+        cantidad: cantidadNum,
+      });
+    }
+
+    // Si quieres que este endpoint siempre se use con proyecto:
+    // (puedes quitar esta validación si decides usarlo solo para ajustes de bodega)
+    if (
+      proyectoId != null &&
+      (!Number.isInteger(proyectoId) || proyectoId <= 0)
+    ) {
+      return res.status(400).json({
+        error:
+          "Si envías 'proyectoId', debe ser un número entero mayor a 0.",
+      });
+    }
+
+    // En este punto el payload es válido.
+    // Como el comentario original dice "Stub para ajustes manuales futuros",
+    // todavía NO modificamos la base de datos para no arriesgar PPP ni stock.
+    // Solo devolvemos una respuesta clara y un resumen de lo que se recibió.
+
+    return res.status(201).json({
+      ok: true,
+      message:
+        "Movimiento recibido correctamente. La lógica de impacto en stock/PPP se implementará en una etapa posterior.",
+      tipo,
+      proyectoId: proyectoId ?? null,
+      documento: (documento ?? null) || null,
+      observacion: (observacion ?? null) || null,
+      items: cleanedItems,
+    });
+  } catch (e) {
+    console.error("[POST /movimientos] Error:", e);
+    return res.status(500).json({
+      error:
+        "Error interno al registrar el movimiento. Revisa los logs del servidor.",
+    });
+  }
 });
+
 
 // LISTAR movimientos de stock
 app.get("/movimientos", async (req, res) => {
@@ -623,7 +824,6 @@ app.get("/movimientos", async (req, res) => {
    ========================= */
 
 // LISTAR ingresos
-// GET /ingresos
 app.get("/ingresos", async (req, res) => {
   try {
     const { q = "", page = "1", pageSize = "10" } = req.query;
@@ -898,95 +1098,158 @@ async function resolveProveedor(tx, body) {
   );
 }
 
-
-// SALIDAS a proyecto
+// =========================
+// Egresos (salidas) desde bodega a proyecto
+// =========================
 app.post("/proyectos/salidas", async (req, res) => {
-  const body = req.body || {};
-  if (!Array.isArray(body.items) || body.items.length === 0) {
-    return res
-      .status(400)
-      .json({ error: "Debe incluir al menos un ítem." });
-  }
-
   try {
-    const result = await prisma.$transaction(async (tx) => {
-      const proyecto = await resolveProyecto(tx, body);
-      const bodega = await resolveBodegaPrincipal(tx);
+    console.log("[POST /proyectos/salidas] body:", req.body);
 
-      const header = await tx.movimientoProyecto.create({
+    const { proyectoId, documento, observacion, items } = req.body || {};
+
+    // 1) Validar y resolver proyecto
+    let proyecto;
+    try {
+      // acepta { proyectoId } gracias a resolveProyecto
+      proyecto = await resolveProyecto({ proyectoId });
+    } catch (err) {
+      console.error("[POST /proyectos/salidas] Proyecto inválido:", err);
+      return res
+        .status(400)
+        .json({ error: err.message || "Proyecto inválido." });
+    }
+
+    // 2) Resolver bodega inicial (desde donde sale el stock)
+    let bodega;
+    try {
+      bodega = await resolveBodegaInicial();
+    } catch (err) {
+      console.error("[POST /proyectos/salidas] Bodega inválida:", err);
+      return res
+        .status(400)
+        .json({ error: err.message || "Bodega inválida." });
+    }
+
+    // 3) Validar items
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({
+        error:
+          "Debes enviar al menos un ítem con SKU y cantidad mayor a 0.",
+      });
+    }
+
+    const cleanedItems = [];
+    for (const raw of items) {
+      const sku = String(raw?.sku || "").trim();
+      const cantidadNum = Number(raw?.cantidad);
+
+      if (!sku) {
+        return res.status(400).json({
+          error: "Todos los ítems deben tener un SKU no vacío.",
+        });
+      }
+      if (!Number.isFinite(cantidadNum) || cantidadNum <= 0) {
+        return res.status(400).json({
+          error:
+            "Todos los ítems deben tener una cantidad numérica mayor a 0.",
+        });
+      }
+
+      cleanedItems.push({ sku, cantidad: cantidadNum });
+    }
+
+    // 4) Traer productos por SKU
+    const skus = cleanedItems.map((it) => it.sku);
+    const productos = await prisma.producto.findMany({
+      where: { sku: { in: skus } },
+    });
+
+    if (productos.length !== cleanedItems.length) {
+      const encontrados = new Set(productos.map((p) => p.sku));
+      const faltantes = cleanedItems
+        .filter((it) => !encontrados.has(it.sku))
+        .map((it) => it.sku);
+
+      return res.status(400).json({
+        error:
+          "Hay productos del formulario que no existen en el catálogo: " +
+          faltantes.join(", "),
+      });
+    }
+
+    const mapProductos = new Map();
+    for (const p of productos) {
+      mapProductos.set(p.sku, p);
+    }
+
+    // 5) Transacción: cabecera + ítems + movimiento de stock (usando registrarSalida)
+    const result = await prisma.$transaction(async (tx) => {
+      const mov = await tx.movimientoProyecto.create({
         data: {
-          proyecto: proyecto.nombre,
           tipo: ProyectoMovTipo.SALIDA,
-          fecha: parseDate(body.fecha) || new Date(),
-          documento: body.documento || null,
-          observacion: body.observacion ?? null,
+          tipoDocumento: null, // por ahora
+          numeroDocumento:
+            documento && String(documento).trim() !== ""
+              ? String(documento).trim()
+              : null,
+          observacion:
+            observacion && String(observacion).trim() !== ""
+              ? String(observacion).trim()
+              : null,
+          proyecto: {
+            connect: { id: proyecto.id },
+          },
+          bodega: {
+            connect: { id: bodega.id },
+          },
         },
       });
 
-      for (const raw of body.items) {
-        const cantidad = Number(raw?.cantidad);
-        if (!Number.isFinite(cantidad) || cantidad <= 0) {
-          throw new Error("Ítem inválido: cantidad > 0 requerida.");
-        }
+      for (const it of cleanedItems) {
+        const prod = mapProductos.get(it.sku);
+        const costoUnitario = prod.ppp ?? 0;
 
-        let prod = null;
-        if (raw.productoId) {
-          prod = await tx.producto.findUnique({
-            where: { id: Number(raw.productoId) },
-          });
-        } else if (raw.sku) {
-          prod = await tx.producto.findUnique({
-            where: { sku: String(raw.sku) },
-          });
-        } else {
-          throw new Error(
-            "Ítem inválido: debe incluir productoId o sku."
-          );
-        }
-
-        if (!prod)
-          throw new Error(
-            `Producto no encontrado (${raw?.productoId ?? raw?.sku}).`
-          );
-
-        const costoUnitario = prod.ppp
-          ? Number.parseFloat(String(prod.ppp))
-          : 0;
-
+        // Ítem del movimiento de proyecto
         await tx.movimientoProyectoItem.create({
           data: {
-            movimientoId: header.id,
+            movimientoId: mov.id,
             productoId: prod.id,
-            cantidad,
+            cantidad: it.cantidad,
             costoUnitario,
           },
         });
 
+        // Movimiento de stock + actualización de stock/PPP
         await registrarSalida(tx, {
           productoId: prod.id,
-          cantidad,
-          refTipo: RefTipo.PROYECTO_SALIDA,
-          refId: header.id,
+          cantidad: it.cantidad,
+          refTipo: RefTipo.MOVIMIENTO_PROYECTO_SALIDA, // según tu enum RefTipo
+          refId: mov.id,
         });
       }
 
-      return { header, proyecto, bodega };
+      return mov;
     });
 
-    res.status(201).json({
+    return res.status(201).json({
       ok: true,
-      movimientoId: result.header.id,
-      proyecto: result.proyecto,
+      movimientoId: result.id,
     });
   } catch (e) {
-    console.error("[POST /proyectos/salidas] Error:", e?.message || e);
-    res.status(400).json({ error: e?.message || String(e) });
+    console.error("[POST /proyectos/salidas] Error:", e);
+    const msg =
+      e instanceof Error
+        ? e.message
+        : "Error interno al registrar egreso.";
+    return res.status(400).json({ error: msg });
   }
 });
+
 
 // RETORNOS desde proyecto
 app.post("/proyectos/retornos", async (req, res) => {
   const body = req.body || {};
+
   if (!Array.isArray(body.items) || body.items.length === 0) {
     return res
       .status(400)
@@ -1000,11 +1263,23 @@ app.post("/proyectos/retornos", async (req, res) => {
 
       const header = await tx.movimientoProyecto.create({
         data: {
-          proyecto: proyecto.nombre,
           tipo: ProyectoMovTipo.RETORNO,
           fecha: parseDate(body.fecha) || new Date(),
-          documento: body.documento || null,
-          observacion: body.observacion ?? null,
+          tipoDocumento: null,
+          numeroDocumento:
+            body.documento && String(body.documento).trim() !== ""
+              ? String(body.documento).trim()
+              : null,
+          observacion:
+            body.observacion && String(body.observacion).trim() !== ""
+              ? String(body.observacion).trim()
+              : null,
+          proyecto: {
+            connect: { id: proyecto.id },
+          },
+          bodega: {
+            connect: { id: bodega.id },
+          },
         },
       });
 
@@ -1021,7 +1296,7 @@ app.post("/proyectos/retornos", async (req, res) => {
           });
         } else if (raw.sku) {
           prod = await tx.producto.findUnique({
-            where: { sku: String(raw.sku) },
+            where: { sku: String(raw.sku).trim() },
           });
         } else {
           throw new Error(
@@ -1029,10 +1304,11 @@ app.post("/proyectos/retornos", async (req, res) => {
           );
         }
 
-        if (!prod)
+        if (!prod) {
           throw new Error(
             `Producto no encontrado (${raw?.productoId ?? raw?.sku}).`
           );
+        }
 
         const costoUnitario = prod.ppp
           ? Number.parseFloat(String(prod.ppp))
@@ -1050,7 +1326,7 @@ app.post("/proyectos/retornos", async (req, res) => {
         await registrarEntradaRetorno(tx, {
           productoId: prod.id,
           cantidad,
-          refTipo: RefTipo.PROYECTO_RETORNO,
+          refTipo: RefTipo.MOVIMIENTO_PROYECTO_RETORNO, // 👈 enum correcto
           refId: header.id,
         });
       }
@@ -1061,7 +1337,10 @@ app.post("/proyectos/retornos", async (req, res) => {
     res.status(201).json({
       ok: true,
       movimientoId: result.header.id,
-      proyecto: result.proyecto,
+      proyecto: {
+        id: result.proyecto.id,
+        nombre: result.proyecto.nombre,
+      },
     });
   } catch (e) {
     console.error("[POST /proyectos/retornos] Error:", e?.message || e);
@@ -1076,11 +1355,11 @@ app.get("/proyectos/movimientos", async (req, res) => {
       q = "",
       tipo = "ALL",
       page = "1",
-      pageSize = "10",
+      pageSize = "20",
     } = req.query;
 
     const pageNumber = Math.max(parseInt(page, 10) || 1, 1);
-    const sizeNumber = Math.max(parseInt(pageSize, 10) || 10, 1);
+    const sizeNumber = Math.max(parseInt(pageSize, 10) || 20, 1);
     const skip = (pageNumber - 1) * sizeNumber;
 
     const where = {};
@@ -1093,13 +1372,12 @@ app.get("/proyectos/movimientos", async (req, res) => {
       }
     }
 
-    // Búsqueda por proyecto, documento u observación
+    // (opcional) filtro por documento/observación
     if (typeof q === "string" && q.trim() !== "") {
-      const query = q.trim();
+      const term = q.trim();
       where.OR = [
-        { proyecto: { contains: query, mode: "insensitive" } },
-        { documento: { contains: query, mode: "insensitive" } },
-        { observacion: { contains: query, mode: "insensitive" } },
+        { numeroDocumento: { contains: term, mode: "insensitive" } },
+        { observacion: { contains: term, mode: "insensitive" } },
       ];
     }
 
@@ -1110,10 +1388,18 @@ app.get("/proyectos/movimientos", async (req, res) => {
         skip,
         take: sizeNumber,
         include: {
+          // 👇 IMPORTANTE: cargar el proyecto
+          proyecto: {
+            select: { nombre: true },
+          },
+          // 👇 y los productos de los ítems
           items: {
             include: {
               producto: {
-                select: { sku: true, nombre: true },
+                select: {
+                  sku: true,
+                  nombre: true,
+                },
               },
             },
           },
@@ -1126,8 +1412,8 @@ app.get("/proyectos/movimientos", async (req, res) => {
       id: m.id,
       fecha: m.fecha.toISOString(),
       tipo: m.tipo === "SALIDA" ? "Salida" : "Retorno",
-      proyecto: m.proyecto,
-      documento: m.documento ?? "",
+      proyecto: m.proyecto?.nombre ?? "",          // 👈 nombre plano
+      documento: m.numeroDocumento ?? "",
       observacion: m.observacion ?? "",
       items: m.items.map((it) => ({
         sku: it.producto?.sku ?? "",
@@ -1142,10 +1428,11 @@ app.get("/proyectos/movimientos", async (req, res) => {
 
     res.json({ data, total });
   } catch (e) {
-    console.error("[GET /proyectos/movimientos] Error:", e?.message || e);
+    console.error("[GET /proyectos/movimientos] Error:", e);
     res.status(500).json({ error: e?.message || String(e) });
   }
 });
+
 
 
 /* =========================

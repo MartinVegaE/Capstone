@@ -1,0 +1,121 @@
+// CREAR PRODUCTO
+app.post("/productos", async (req, res) => {
+  try {
+    console.log("[POST /productos] body:", req.body);
+
+    const {
+      sku,
+      nombre,
+      descripcion,
+      categoriaId,
+      categoriaCodigo,
+      subcategoriaId,
+      proveedorId,
+      stock,
+      stockMinimo,
+      ubicacion,
+      codigoBarras,
+      imagenUrl,
+    } = req.body || {};
+
+    if (!sku || !nombre) {
+      return res.status(400).json({
+        error: "SKU y nombre son obligatorios",
+      });
+    }
+
+    // ==== Resolver categoría (por id o por código) ====
+    let categoriaIdNum = null;
+
+    if (categoriaId !== undefined && categoriaId !== null && categoriaId !== "") {
+      const tmp = Number(categoriaId);
+      if (Number.isNaN(tmp) || tmp <= 0) {
+        return res
+          .status(400)
+          .json({ error: "categoriaId es obligatorio y debe ser numérico" });
+      }
+      categoriaIdNum = tmp;
+    } else if (categoriaCodigo) {
+      const cat = await prisma.categoria.findUnique({
+        where: { codigo: String(categoriaCodigo) },
+      });
+
+      if (!cat) {
+        return res.status(400).json({
+          error: `No existe una categoría con código "${categoriaCodigo}". ` +
+            `Crea la categoría primero en el catálogo.`,
+        });
+      }
+
+      categoriaIdNum = cat.id;
+    } else {
+      return res.status(400).json({
+        error:
+          "Debes enviar categoriaId o categoriaCodigo para crear el producto.",
+      });
+    }
+
+    // ==== Subcategoría opcional ====
+    let subcategoriaIdNum = null;
+    if (subcategoriaId !== undefined && subcategoriaId !== null && subcategoriaId !== "") {
+      const tmp = Number(subcategoriaId);
+      if (Number.isNaN(tmp) || tmp <= 0) {
+        return res.status(400).json({
+          error: "subcategoriaId debe ser numérico",
+        });
+      }
+      subcategoriaIdNum = tmp;
+    }
+
+    // ==== Proveedor obligatorio ====
+    const proveedorIdNum = Number(proveedorId);
+    if (!proveedorIdNum || Number.isNaN(proveedorIdNum)) {
+      return res.status(400).json({
+        error: "proveedorId es obligatorio y debe ser numérico",
+      });
+    }
+
+    // ==== Stock / stock mínimo ====
+    const stockNum = stock !== undefined && stock !== null && stock !== ""
+      ? Number(stock)
+      : 0;
+    const stockMinNum =
+      stockMinimo !== undefined && stockMinimo !== null && stockMinimo !== ""
+        ? Number(stockMinimo)
+        : 0;
+
+    if (Number.isNaN(stockNum) || stockNum < 0) {
+      return res
+        .status(400)
+        .json({ error: "stock debe ser un número mayor o igual a 0" });
+    }
+    if (Number.isNaN(stockMinNum) || stockMinNum < 0) {
+      return res.status(400).json({
+        error: "stockMinimo debe ser un número mayor o igual a 0",
+      });
+    }
+
+    const nuevo = await prisma.producto.create({
+      data: {
+        sku: String(sku).trim(),
+        nombre: String(nombre).trim(),
+        descripcion: descripcion ? String(descripcion).trim() : null,
+        categoriaId: categoriaIdNum,
+        subcategoriaId: subcategoriaIdNum,
+        proveedorId: proveedorIdNum,
+        stock: stockNum,
+        stockMinimo: stockMinNum,
+        ubicacion: ubicacion ? String(ubicacion).trim() : null,
+        codigoBarras: codigoBarras ? String(codigoBarras).trim() : null,
+        imagenUrl: imagenUrl ? String(imagenUrl).trim() : null,
+      },
+    });
+
+    return res.json({ ok: true, data: nuevo });
+  } catch (e) {
+    console.error("[POST /productos] Error:", e);
+    return res
+      .status(500)
+      .json({ error: "Error interno al crear el producto" });
+  }
+});
