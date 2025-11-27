@@ -12,21 +12,17 @@ const API_URL = "http://localhost:4000";
 type IngresoItemFromApi = {
   sku: string;
   cantidad: number;
-  costo?: number | null;
+  costo?: number;
 };
 
 type IngresoFromApi = {
   id: number;
   proveedor: string;
-  documento?: string | null;
-  observacion?: string | null;
+  documento: string;
+  observacion: string;
   fecha: string; // ISO
-  estado?: string | null;
+  estado: string;
   items: IngresoItemFromApi[];
-
-  // Nuevos: el backend puede enviar tipo y número
-  tipoDocumento?: string | null;
-  numeroDocumento?: string | null;
 };
 
 type IngresosResponse = {
@@ -64,6 +60,14 @@ type Subcategoria = {
   categoria?: Categoria;
 };
 
+type ProductoBusqueda = {
+  id: number;
+  sku: string;
+  nombre: string;
+  categoriaCodigo?: CategoriaCodigo;
+  subcategoriaId?: number | null;
+};
+
 type ItemDraft = {
   id: string;
   sku: string;
@@ -73,6 +77,11 @@ type ItemDraft = {
   cantidad: string;
   costoUnitario: string;
   stockMinimo: string;
+  // estado solo de UI para el buscador de productos
+  searchTerm?: string;
+  searchResults?: ProductoBusqueda[];
+  searchLoading?: boolean;
+  searchError?: string | null;
 };
 
 /* =========================
@@ -93,7 +102,7 @@ const TIPO_DOC_OPCIONES: { value: string; label: string }[] = [
 ];
 
 /* =========================
-   Helpers UI
+   Helpers
    ========================= */
 
 function formatDateShort(iso: string) {
@@ -120,34 +129,29 @@ function money(n: number) {
   });
 }
 
-function getTipoDocumentoLabel(tipo?: string | null): string {
-  if (!tipo) return "—";
-  const opt = TIPO_DOC_OPCIONES.find((o) => o.value === tipo);
-  return opt ? opt.label : tipo;
-}
-
-function buildDocumentoLabel(ing: {
-  tipoDocumento?: string | null;
-  numeroDocumento?: string | null;
-  documento?: string | null;
-}): string {
-  const tipoLabel = getTipoDocumentoLabel(ing.tipoDocumento);
-  const nro = ing.numeroDocumento?.trim() || "";
-
-  // Si el backend antiguo solo mandaba `documento`, usamos eso.
-  if (!ing.tipoDocumento && !nro) {
-    return ing.documento || "—";
+async function buscarProductos(term: string): Promise<ProductoBusqueda[]> {
+  const url = new URL("/productos", API_URL);
+  url.searchParams.set("page", "1");
+  url.searchParams.set("pageSize", "20");
+  if (term.trim()) {
+    url.searchParams.set("q", term.trim());
   }
-
-  if (!ing.tipoDocumento) {
-    return nro || "—";
+  const res = await fetch(url.toString());
+  if (!res.ok) {
+    throw new Error("Error buscando productos");
   }
+  const json = await res.json();
+  const list = Array.isArray(json) ? json : json.data ?? [];
 
-  if (!nro) {
-    return tipoLabel;
-  }
-
-  return `${tipoLabel} ${nro}`;
+  return (list as any[]).map((p) => ({
+    id: p.id,
+    sku: p.sku,
+    nombre: p.nombre,
+    categoriaCodigo:
+      (p.categoriaCodigo as CategoriaCodigo | undefined) ??
+      (p.categoria?.codigo as CategoriaCodigo | undefined),
+    subcategoriaId: p.subcategoriaId ?? p.subcategoria?.id ?? null,
+  }));
 }
 
 /* =========================
@@ -251,7 +255,7 @@ export default function IngresosPage() {
     [categorias]
   );
 
-  // Datos del drawer (nuevo ingreso)
+  // Datos del drawer
   const [tipoDocumento, setTipoDocumento] = useState("FACTURA");
   const [numeroDocumento, setNumeroDocumento] = useState("");
   const [observacion, setObservacion] = useState("");
@@ -266,6 +270,10 @@ export default function IngresosPage() {
       cantidad: "",
       costoUnitario: "",
       stockMinimo: "",
+      searchTerm: "",
+      searchResults: [],
+      searchLoading: false,
+      searchError: null,
     },
   ]);
 
@@ -288,21 +296,6 @@ export default function IngresosPage() {
     queryFn: fetchBodegaPrincipal,
     enabled: nuevoAbierto,
   });
-
-  // Detalle de ingreso (usamos los datos del listado; no hacemos fetch extra)
-  const [detalleAbierto, setDetalleAbierto] = useState(false);
-  const [ingresoSeleccionado, setIngresoSeleccionado] =
-    useState<IngresoFromApi | null>(null);
-
-  function openDetalle(ing: IngresoFromApi) {
-    setIngresoSeleccionado(ing);
-    setDetalleAbierto(true);
-  }
-
-  function closeDetalle() {
-    setDetalleAbierto(false);
-    setIngresoSeleccionado(null);
-  }
 
   /* ========== Mutación: crear ingreso ========== */
 
@@ -341,6 +334,7 @@ export default function IngresosPage() {
         tipoDocumento,
         numeroDocumento: numeroDocumento.trim() || null,
         observacion: observacion.trim() || null,
+
         proveedorId: selectedProveedor.id,
         proveedor: {
           id: selectedProveedor.id,
@@ -349,6 +343,7 @@ export default function IngresosPage() {
           email: selectedProveedor.email,
           telefono: selectedProveedor.telefono,
         },
+
         items: cleanedItems.map((it) => ({
           sku: it.sku.trim(),
           nombre: it.nombre.trim(),
@@ -399,51 +394,14 @@ export default function IngresosPage() {
         cantidad: "",
         costoUnitario: "",
         stockMinimo: "",
+        searchTerm: "",
+        searchResults: [],
+        searchLoading: false,
+        searchError: null,
       },
     ]);
     setProveedorSearch("");
     setSelectedProveedor(null);
-  }
-
-  /* ========== Mutación: eliminar ingreso ========== */
-
-  const [eliminandoId, setEliminandoId] = useState<number | null>(null);
-
-  const eliminarIngresoMutation = useMutation({
-    mutationFn: async (id: number) => {
-      const res = await fetch(`${API_URL}/ingresos/${id}`, {
-        method: "DELETE",
-      });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(
-          (json as any).error || "Error eliminando ingreso"
-        );
-      }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["ingresos"] });
-    },
-    onError: (error: any) => {
-      console.error("Error eliminando ingreso:", error);
-      alert(
-        error?.message ||
-          "Error al eliminar ingreso. Revisa la consola."
-      );
-    },
-    onSettled: () => {
-      setEliminandoId(null);
-    },
-  });
-
-  function handleEliminarIngreso(ing: IngresoFromApi) {
-    const ok = window.confirm(
-      `¿Seguro que quieres eliminar el ingreso #${ing.id}?\n` +
-        "Esta acción no se puede deshacer."
-    );
-    if (!ok) return;
-    setEliminandoId(ing.id);
-    eliminarIngresoMutation.mutate(ing.id);
   }
 
   /* ========== Handlers items ========== */
@@ -461,20 +419,39 @@ export default function IngresosPage() {
   }
 
   function handleCategoriaChange(id: string, value: string) {
-    const val = value as CategoriaCodigo | "";
-    setItems((prev) =>
-      prev.map((it) =>
-        it.id === id
-          ? {
-              ...it,
-              categoriaCodigo: val,
-              // al cambiar categoría, limpiamos subcategoría para evitar inconsistencias
-              subcategoriaId: "",
-            }
-          : it
-      )
-    );
-  }
+  const newCat = value as CategoriaCodigo | "";
+
+  setItems((prev) =>
+    prev.map((it) => {
+      if (it.id !== id) return it;
+
+      // Prefijos conocidos de SKU por categoría
+      const knownPrefixes = CATEGORIAS_STATIC.map(
+        (c) => `${c.value}-`
+      );
+
+      let newSku = it.sku;
+
+      // Solo sobreescribimos el SKU si:
+      // - está vacío, o
+      // - ya tenía un prefijo de categoría (EXT-, DET-, etc.)
+      if (
+        !newSku ||
+        knownPrefixes.some((pref) => newSku.startsWith(pref))
+      ) {
+        newSku = newCat ? `${newCat}-` : "";
+      }
+
+      return {
+        ...it,
+        categoriaCodigo: newCat,
+        subcategoriaId: "",
+        sku: newSku,
+      };
+    })
+  );
+}
+
 
   function handleSubcategoriaChange(id: string, value: string) {
     setItems((prev) =>
@@ -501,6 +478,10 @@ export default function IngresosPage() {
         cantidad: "",
         costoUnitario: "",
         stockMinimo: "",
+        searchTerm: "",
+        searchResults: [],
+        searchLoading: false,
+        searchError: null,
       },
     ]);
   }
@@ -508,6 +489,120 @@ export default function IngresosPage() {
   function handleEliminarItem(id: string) {
     setItems((prev) =>
       prev.length > 1 ? prev.filter((it) => it.id !== id) : prev
+    );
+  }
+
+  function handleItemSearchTermChange(id: string, value: string) {
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === id
+          ? { ...it, searchTerm: value, searchError: null }
+          : it
+      )
+    );
+  }
+
+  async function handleBuscarProducto(
+    id: string,
+    rawTerm: string | undefined
+  ) {
+    const term = (rawTerm ?? "").trim();
+
+    // set loading
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === id
+          ? {
+              ...it,
+              searchLoading: true,
+              searchError: null,
+              searchResults: [],
+            }
+          : it
+      )
+    );
+
+    if (!term) {
+      setItems((prev) =>
+        prev.map((it) =>
+          it.id === id
+            ? {
+                ...it,
+                searchLoading: false,
+                searchError: "Escribe algo para buscar.",
+              }
+            : it
+        )
+      );
+      return;
+    }
+
+    try {
+      const results = await buscarProductos(term);
+      setItems((prev) =>
+        prev.map((it) =>
+          it.id === id
+            ? {
+                ...it,
+                searchLoading: false,
+                searchResults: results,
+                searchError:
+                  results.length === 0
+                    ? "No se encontraron productos."
+                    : null,
+              }
+            : it
+        )
+      );
+    } catch (err: any) {
+      console.error("Error buscando productos:", err);
+      setItems((prev) =>
+        prev.map((it) =>
+          it.id === id
+            ? {
+                ...it,
+                searchLoading: false,
+                searchResults: [],
+                searchError:
+                  err?.message ??
+                  "Error buscando productos. Revisa la consola.",
+              }
+            : it
+        )
+      );
+    }
+  }
+
+  function handleSelectProducto(
+    itemId: string,
+    p: ProductoBusqueda
+  ) {
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.id !== itemId) return it;
+
+        let categoriaCodigo = it.categoriaCodigo;
+        let subcategoriaId: number | "" | null = it.subcategoriaId;
+
+        if (
+          p.categoriaCodigo &&
+          categoriasByCodigo[p.categoriaCodigo]
+        ) {
+          categoriaCodigo = p.categoriaCodigo;
+          subcategoriaId = p.subcategoriaId ?? "";
+        }
+
+        return {
+          ...it,
+          sku: p.sku,
+          nombre: p.nombre,
+          categoriaCodigo,
+          subcategoriaId,
+          searchTerm: "",
+          searchResults: [],
+          searchError: null,
+        };
+      })
     );
   }
 
@@ -587,9 +682,6 @@ export default function IngresosPage() {
                 <th className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
                   Total aprox.
                 </th>
-                <th className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Acciones
-                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -597,14 +689,12 @@ export default function IngresosPage() {
                 const total = calcTotal(ing.items);
                 const resumenItems = ing.items
                   .slice(0, 3)
-                  .map((it, idx) => `${it.sku} x${it.cantidad}`)
+                  .map((it) => `${it.sku} x${it.cantidad}`)
                   .join(" · ");
                 const mas =
                   ing.items.length > 3
                     ? ` (+${ing.items.length - 3} más)`
                     : "";
-                const docLabel = buildDocumentoLabel(ing);
-
                 return (
                   <tr key={ing.id}>
                     <td className="whitespace-nowrap px-4 py-2 text-slate-700">
@@ -621,7 +711,7 @@ export default function IngresosPage() {
                       )}
                     </td>
                     <td className="px-4 py-2 text-slate-700">
-                      {docLabel}
+                      {ing.documento || "—"}
                     </td>
                     <td className="px-4 py-2 text-xs text-slate-600">
                       {resumenItems}
@@ -630,32 +720,6 @@ export default function IngresosPage() {
                     <td className="whitespace-nowrap px-4 py-2 text-right text-slate-900">
                       {total > 0 ? `$${money(total)}` : "—"}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-2 text-right text-xs">
-                      <div className="flex justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openDetalle(ing)}
-                          className="rounded-full border border-slate-200 px-3 py-1 font-medium text-slate-700 hover:bg-slate-50"
-                        >
-                          Ver detalle
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleEliminarIngreso(ing)
-                          }
-                          disabled={
-                            eliminandoId === ing.id ||
-                            eliminarIngresoMutation.isPending
-                          }
-                          className="rounded-full border border-red-100 px-3 py-1 font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
-                        >
-                          {eliminandoId === ing.id
-                            ? "Eliminando..."
-                            : "Eliminar"}
-                        </button>
-                      </div>
-                    </td>
                   </tr>
                 );
               })}
@@ -663,143 +727,6 @@ export default function IngresosPage() {
           </table>
         )}
       </div>
-
-      {/* Modal de detalle de ingreso (solo lectura, sin llamadas extra) */}
-      {detalleAbierto && ingresoSeleccionado && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/30 backdrop-blur-sm">
-          <div className="w-full max-w-3xl rounded-3xl bg-white p-6 shadow-2xl">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="text-base font-semibold text-slate-900">
-                  Detalle de ingreso #{ingresoSeleccionado.id}
-                </h2>
-                <p className="mt-1 text-xs text-slate-500">
-                  {formatDateShort(ingresoSeleccionado.fecha)}
-                </p>
-                <p className="mt-1 text-xs text-slate-500">
-                  {getTipoDocumentoLabel(
-                    ingresoSeleccionado.tipoDocumento
-                  )}{" "}
-                  · Nº{" "}
-                  {ingresoSeleccionado.numeroDocumento?.trim() ||
-                    "—"}
-                </p>
-                {ingresoSeleccionado.observacion && (
-                  <p className="mt-1 text-xs text-slate-500">
-                    Obs: {ingresoSeleccionado.observacion}
-                  </p>
-                )}
-                <p className="mt-1 text-xs text-slate-500">
-                  Proveedor:{" "}
-                  <span className="font-medium">
-                    {ingresoSeleccionado.proveedor || "—"}
-                  </span>
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={closeDetalle}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 text-slate-500 hover:bg-slate-50"
-              >
-                <span className="text-lg" aria-hidden>
-                  ×
-                </span>
-              </button>
-            </div>
-
-            <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
-              <table className="min-w-full divide-y divide-slate-200 text-sm">
-                <thead className="bg-slate-50">
-                  <tr>
-                    <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      Producto
-                    </th>
-                    <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      SKU
-                    </th>
-                    <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      Cantidad
-                    </th>
-                    <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      Costo unitario
-                    </th>
-                    <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      Subtotal
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200 bg-white">
-                  {ingresoSeleccionado.items.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={5}
-                        className="px-3 py-3 text-center text-sm text-slate-500"
-                      >
-                        Este ingreso no tiene ítems registrados.
-                      </td>
-                    </tr>
-                  ) : (
-                    ingresoSeleccionado.items.map((it, idx) => {
-                      const costo =
-                        typeof it.costo === "number"
-                          ? it.costo
-                          : 0;
-                      const sub =
-                        it.cantidad *
-                        (Number.isFinite(costo) ? costo : 0);
-
-                      return (
-                        <tr key={idx}>
-                          <td className="px-3 py-2 text-sm text-slate-700">
-                            {`Ítem ${idx + 1}`}
-                          </td>
-                          <td className="px-3 py-2 text-sm text-slate-500">
-                            {it.sku}
-                          </td>
-                          <td className="px-3 py-2 text-right text-sm text-slate-700">
-                            {it.cantidad}
-                          </td>
-                          <td className="px-3 py-2 text-right text-sm text-slate-700">
-                            $
-                            {Number.isFinite(costo)
-                              ? money(costo)
-                              : "—"}
-                          </td>
-                          <td className="px-3 py-2 text-right text-sm text-slate-700">
-                            $
-                            {Number.isFinite(sub)
-                              ? money(sub)
-                              : "—"}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Total del ingreso */}
-            <div className="mt-4 flex justify-end">
-              <div className="rounded-2xl bg-slate-50 px-4 py-3 text-right">
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Total ingreso
-                </div>
-                <div className="text-base font-semibold text-slate-900">
-                  {(() => {
-                    const total = calcTotal(
-                      ingresoSeleccionado.items
-                    );
-                    return total > 0
-                      ? `$${money(total)}`
-                      : "—";
-                  })()}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Drawer de nuevo ingreso */}
       {nuevoAbierto && (
@@ -1016,6 +943,74 @@ export default function IngresosPage() {
                           )}
                         </div>
 
+                        {/* Buscador de producto existente */}
+                        <div className="mt-2 rounded-xl border border-dashed border-slate-200 bg-white/60 px-3 py-2">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={it.searchTerm ?? ""}
+                              onChange={(e) =>
+                                handleItemSearchTermChange(
+                                  it.id,
+                                  e.target.value
+                                )
+                              }
+                              placeholder="Buscar producto por SKU o nombre..."
+                              className="flex-1 rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500/40"
+                            />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleBuscarProducto(
+                                  it.id,
+                                  it.searchTerm
+                                )
+                              }
+                              className="rounded-lg bg-sky-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-sky-700 disabled:opacity-60"
+                              disabled={!!it.searchLoading}
+                            >
+                              {it.searchLoading
+                                ? "Buscando..."
+                                : "Buscar"}
+                            </button>
+                          </div>
+                          {it.searchError && (
+                            <p className="mt-1 text-[11px] text-red-600">
+                              {it.searchError}
+                            </p>
+                          )}
+                          {it.searchResults &&
+                            it.searchResults.length > 0 && (
+                              <div className="mt-2 max-h-40 overflow-y-auto rounded-lg border border-slate-200 bg-white text-xs">
+                                {it.searchResults.map((p) => (
+                                  <button
+                                    key={p.id}
+                                    type="button"
+                                    onClick={() =>
+                                      handleSelectProducto(
+                                        it.id,
+                                        p
+                                      )
+                                    }
+                                    className="flex w-full flex-col items-start px-2 py-1.5 text-left hover:bg-slate-50"
+                                  >
+                                    <span className="font-medium text-slate-900">
+                                      {p.sku} · {p.nombre}
+                                    </span>
+                                    {p.categoriaCodigo && (
+                                      <span className="text-[11px] text-slate-500">
+                                        {p.categoriaCodigo}
+                                        {p.subcategoriaId
+                                          ? ` · subcat #${p.subcategoriaId}`
+                                          : ""}
+                                      </span>
+                                    )}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                        </div>
+
                         <div className="mt-2 grid gap-3 md:grid-cols-6">
                           {/* SKU */}
                           <div className="md:col-span-1">
@@ -1115,7 +1110,9 @@ export default function IngresosPage() {
                               Subcategoría
                             </label>
                             <select
-                              value={it.subcategoriaId ?? ""}
+                              value={
+                                it.subcategoriaId ?? ""
+                              }
                               onChange={(e) =>
                                 handleSubcategoriaChange(
                                   it.id,
@@ -1135,7 +1132,10 @@ export default function IngresosPage() {
                                   : "Selecciona categoría primero"}
                               </option>
                               {subcats.map((s) => (
-                                <option key={s.id} value={s.id}>
+                                <option
+                                  key={s.id}
+                                  value={s.id}
+                                >
                                   {s.nombre}
                                 </option>
                               ))}
@@ -1214,7 +1214,9 @@ export default function IngresosPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => crearIngresoMutation.mutate()}
+                  onClick={() =>
+                    crearIngresoMutation.mutate()
+                  }
                   disabled={crearIngresoMutation.isPending}
                   className="inline-flex items-center justify-center rounded-xl bg-sky-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-sky-700 disabled:opacity-60"
                 >
@@ -1226,8 +1228,8 @@ export default function IngresosPage() {
 
               {crearIngresoMutation.isError && (
                 <div className="mt-2 text-sm text-red-600">
-                  {(crearIngresoMutation.error as Error)?.message ||
-                    "Error al registrar ingreso"}
+                  {(crearIngresoMutation.error as Error)
+                    ?.message || "Error al registrar ingreso"}
                 </div>
               )}
             </div>

@@ -6,8 +6,16 @@ import React, {
   type FormEvent,
 } from "react";
 import { Dialog, Transition } from "@headlessui/react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { http } from "../lib/http";
+
+// URL base del backend para abrir el CSV en una pestaña nueva
+const API_URL: string =
+  import.meta.env.VITE_API_URL || "http://localhost:4000";
 
 /* =========================
    Tipos
@@ -54,12 +62,6 @@ function formatDateShort(iso?: string | null): string {
   });
 }
 
-function estadoBadgeClasses(activo: boolean): string {
-  return activo
-    ? "bg-emerald-100 text-emerald-700"
-    : "bg-slate-200 text-slate-600";
-}
-
 /* =========================
    Página
    ========================= */
@@ -93,6 +95,41 @@ export default function CentroCostosPage() {
         },
       });
       return res.data;
+    },
+  });
+
+  // =========================
+  // Mutación: toggle activo/inactivo
+  // =========================
+
+  const toggleActivoMutation = useMutation({
+    mutationFn: async (proyecto: Proyecto) => {
+      const payload = {
+        nombre: proyecto.nombre,
+        codigo: proyecto.codigo ?? null,
+        descripcion: proyecto.descripcion ?? null,
+        activo: !proyecto.activo, // invertimos el estado
+      };
+
+      const res = await http.put<Proyecto>(
+        `/proyectos/${proyecto.id}`,
+        payload,
+      );
+
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["proyectos"] });
+    },
+    onError: (err: any) => {
+      console.error(
+        "[PUT /proyectos/:id] Error al togglear activo:",
+        err,
+      );
+      alert(
+        err?.response?.data?.error ??
+          "Error al cambiar el estado del centro de costo.",
+      );
     },
   });
 
@@ -157,7 +194,9 @@ export default function CentroCostosPage() {
     e.preventDefault();
 
     if (!form.nombre.trim()) {
-      alert("El nombre del centro de costo / proyecto es obligatorio.");
+      alert(
+        "El nombre del centro de costo / proyecto es obligatorio.",
+      );
       return;
     }
 
@@ -181,10 +220,13 @@ export default function CentroCostosPage() {
       });
       closePanel();
     } catch (err: any) {
-      console.error("Error guardando proyecto/centro de costo:", err);
+      console.error(
+        "Error guardando proyecto/centro de costo:",
+        err,
+      );
       alert(
         err?.response?.data?.error ??
-          "Error guardando el centro de costo. Revisa la consola."
+          "Error guardando el centro de costo. Revisa la consola.",
       );
     } finally {
       setSaving(false);
@@ -198,7 +240,7 @@ export default function CentroCostosPage() {
   async function handleDelete(p: Proyecto) {
     const ok = window.confirm(
       `¿Seguro que quieres eliminar el centro de costo/proyecto "${p.nombre}"?\n` +
-        "Si tiene movimientos asociados, el sistema podría bloquear la eliminación."
+        "Si tiene movimientos asociados, el sistema podría bloquear la eliminación.",
     );
     if (!ok) return;
 
@@ -209,14 +251,28 @@ export default function CentroCostosPage() {
         queryKey: ["proyectos"],
       });
     } catch (err: any) {
-      console.error("Error eliminando proyecto/centro de costo:", err);
+      console.error(
+        "Error eliminando proyecto/centro de costo:",
+        err,
+      );
       alert(
         err?.response?.data?.error ??
-          "Error eliminando el centro de costo. Revisa la consola."
+          "Error eliminando el centro de costo. Revisa la consola.",
       );
     } finally {
       setDeletingId(null);
     }
+  }
+
+  // =========================
+  // Exportar CSV
+  // =========================
+
+  function handleExportCentrosCsv() {
+    window.open(
+      `${API_URL}/reportes/centros_costo.csv`,
+      "_blank",
+    );
   }
 
   // =========================
@@ -246,14 +302,26 @@ export default function CentroCostosPage() {
               proyecto. Estos se usan luego en los movimientos de stock.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={openCreate}
-            className="inline-flex items-center gap-2 rounded-xl bg-sky-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-sky-700"
-          >
-            <span>＋</span>
-            <span>Nuevo centro de costo</span>
-          </button>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleExportCentrosCsv}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+            >
+              <span>⬇</span>
+              <span>Exportar CSV</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={openCreate}
+              className="inline-flex items-center gap-2 rounded-xl bg-sky-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-sky-700"
+            >
+              <span>＋</span>
+              <span>Nuevo centro de costo</span>
+            </button>
+          </div>
         </div>
 
         {/* Filtros / buscador */}
@@ -273,7 +341,9 @@ export default function CentroCostosPage() {
               <input
                 type="checkbox"
                 checked={soloActivos}
-                onChange={(e) => setSoloActivos(e.target.checked)}
+                onChange={(e) =>
+                  setSoloActivos(e.target.checked)
+                }
                 className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
               />
               <span>Mostrar solo activos</span>
@@ -321,19 +391,37 @@ export default function CentroCostosPage() {
                       </p>
                     )}
                   </div>
-                  <span
+
+                  {/* Botón de estado muy notorio */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      toggleActivoMutation.mutate(p)
+                    }
+                    disabled={
+                      toggleActivoMutation.isPending
+                    }
                     className={
-                      "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium " +
-                      estadoBadgeClasses(p.activo)
+                      "inline-flex items-center gap-1 rounded-full border px-3 py-1 text-[11px] font-semibold shadow-sm " +
+                      (p.activo
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                        : "border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200")
                     }
                   >
-                    {p.activo ? "Activo" : "Inactivo"}
-                  </span>
+                    <span aria-hidden>
+                      {p.activo ? "✅" : "⛔"}
+                    </span>
+                    <span>
+                      {p.activo ? "Activo" : "Inactivo"}
+                    </span>
+                  </button>
                 </div>
 
                 <div className="mt-3 space-y-1 text-[11px] text-slate-600">
                   <div>
-                    <span className="font-medium">Movimientos:</span>{" "}
+                    <span className="font-medium">
+                      Movimientos:
+                    </span>{" "}
                     {p.movimientosCount ?? 0}
                   </div>
                   <div>
@@ -341,7 +429,9 @@ export default function CentroCostosPage() {
                     {formatDateShort(p.creadoEn)}
                   </div>
                   <div>
-                    <span className="font-medium">Actualizado:</span>{" "}
+                    <span className="font-medium">
+                      Actualizado:
+                    </span>{" "}
                     {formatDateShort(p.actualizadoEn)}
                   </div>
                 </div>
@@ -360,7 +450,9 @@ export default function CentroCostosPage() {
                     disabled={deletingId === p.id}
                     className="rounded-full border border-red-100 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
                   >
-                    {deletingId === p.id ? "Eliminando..." : "Eliminar"}
+                    {deletingId === p.id
+                      ? "Eliminando..."
+                      : "Eliminar"}
                   </button>
                 </div>
               </div>

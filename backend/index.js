@@ -1440,105 +1440,507 @@ app.get("/proyectos/movimientos", async (req, res) => {
    ========================= */
 
 app.get("/reportes/ppp.csv", async (_req, res) => {
+  function formatFecha(d) {
+    const pad = (n) => String(n).padStart(2, "0");
+    const dia = pad(d.getDate());
+    const mes = pad(d.getMonth() + 1);
+    const anio = d.getFullYear();
+    const horas = pad(d.getHours());
+    const mins = pad(d.getMinutes());
+    return `${dia}-${mes}-${anio} ${horas}:${mins}`;
+  }
+
   try {
-    const rows = await prisma.producto.findMany({
-      select: {
-        id: true,
-        sku: true,
-        nombre: true,
-        stock: true,
-        ppp: true,
-        actualizadoEn: true,
+    const ahora = new Date();
+
+    const productos = await prisma.producto.findMany({
+      orderBy: { sku: "asc" },
+      include: {
+        categoria: { select: { nombre: true, codigo: true } },
+        subcategoria: { select: { nombre: true } },
+        proveedor: { select: { nombre: true } },
       },
-      orderBy: { id: "asc" },
     });
 
+    const rows = productos.map((p) => {
+      const pppNumber = p.ppp ? Number(p.ppp) : 0;
+      const total = p.stock * pppNumber;
+
+      return {
+        fechaReporte: formatFecha(ahora),
+        sku: p.sku,
+        nombre: p.nombre,
+        categoria: p.categoria?.nombre ?? "",
+        subcategoria: p.subcategoria?.nombre ?? "",
+        proveedor: p.proveedor?.nombre ?? "",
+        stockActual: p.stock,
+        stockMinimo: p.stockMinimo,
+        ppp: pppNumber.toFixed(2),      // PPP con 2 decimales
+        valorTotal: Math.round(total),  // total redondeado
+      };
+    });
+
+    const headers = [
+      "Fecha reporte",
+      "SKU",
+      "Nombre producto",
+      "Categoría",
+      "Subcategoría",
+      "Proveedor",
+      "Stock actual",
+      "Stock mínimo",
+      "PPP (CLP)",
+      "Valor total stock (CLP)",
+    ];
+
+    const csvLines = [
+      headers.join(";"),
+      ...rows.map((r) =>
+        headers
+          .map((h) => {
+            const v = r[
+              h
+                .toLowerCase()
+                .replace(/\s+/g, "")
+                .replace(/[()]/g, "")
+            ] ?? r[
+              // fallback por si acaso
+              ({
+                "Fecha reporte": "fechaReporte",
+                SKU: "sku",
+                "Nombre producto": "nombre",
+                "Categoría": "categoria",
+                "Subcategoría": "subcategoria",
+                Proveedor: "proveedor",
+                "Stock actual": "stockActual",
+                "Stock mínimo": "stockMinimo",
+                "PPP (CLP)": "ppp",
+                "Valor total stock (CLP)": "valorTotal",
+              }[h] || h.toLowerCase())
+            ];
+
+            const s =
+              v === null || v === undefined ? "" : String(v);
+            return `"${s.replace(/"/g, '""')}"`;
+          })
+          .join(";")
+      ),
+    ];
+
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    const ts = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="ppp_${ts}.csv"`
+      "attachment; filename=ppp_actual.csv"
     );
-
-    const header = "id,sku,nombre,stock,ppp,actualizadoEn\n";
-    const body = rows
-      .map((r) =>
-        [
-          r.id,
-          csvEscape(r.sku ?? ""),
-          csvEscape(r.nombre ?? ""),
-          r.stock ?? 0,
-          r.ppp == null
-            ? "0.00"
-            : Number.parseFloat(String(r.ppp)).toFixed(2),
-          r.actualizadoEn?.toISOString?.() ?? "",
-        ].join(",")
-      )
-      .join("\n");
-
-    res.send(header + body);
-  } catch (e) {
-    console.error("[GET /reportes/ppp.csv] Error:", e?.message || e);
-    res.status(500).json({ error: e?.message || String(e) });
+    res.send(csvLines.join("\n"));
+  } catch (error) {
+    console.error("Error generando CSV de PPP actual:", error);
+    res
+      .status(500)
+      .json({ error: "Error generando CSV de PPP actual" });
   }
 });
 
+// ============================
+// Reporte PPP histórico (CSV)
+// ============================
 app.get("/reportes/ppp_historico.csv", async (_req, res) => {
-  try {
-    const productos = await prisma.producto.findMany({
-      select: { id: true, sku: true, nombre: true },
-      orderBy: { id: "asc" },
-    });
+  function formatFecha(d) {
+    const pad = (n) => String(n).padStart(2, "0");
+    const dia = pad(d.getDate());
+    const mes = pad(d.getMonth() + 1);
+    const anio = d.getFullYear();
+    const horas = pad(d.getHours());
+    const mins = pad(d.getMinutes());
+    return `${dia}-${mes}-${anio} ${horas}:${mins}`;
+  }
 
-    const items = await prisma.ingresoItem.findMany({
-      select: {
-        productoId: true,
-        cantidad: true,
-        costoUnitario: true,
+  function escapeCsv(value) {
+    if (value === null || value === undefined) return '""';
+    const s = String(value);
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+
+  try {
+    // OJO: aquí usamos createdAt, NO "fecha"
+    const movimientos = await prisma.stockMovimiento.findMany({
+      orderBy: [
+        { createdAt: "asc" },
+        { id: "asc" },
+      ],
+      include: {
+        producto: {
+          select: {
+            sku: true,
+            nombre: true,
+          },
+        },
       },
     });
 
-    const agg = new Map();
-    for (const it of items) {
-      const pid = it.productoId;
-      const q = Number(it.cantidad) || 0;
-      const c = Number.parseFloat(String(it.costoUnitario)) || 0;
-      const cur = agg.get(pid) || { q: 0, val: 0 };
-      cur.q += q;
-      cur.val += q * c;
-      agg.set(pid, cur);
+    const ahora = new Date();
+
+    // -----------------------------
+    // Construir detalle + resumen
+    // -----------------------------
+    const detalle = [];
+    const resumenPorProducto = {};
+
+    for (const m of movimientos) {
+      const sku = m.producto?.sku ?? "";
+      const nombreProd = m.producto?.nombre ?? "";
+
+      const tipo = m.tipo;          // enum como string
+      const refTipo = m.refTipo;    // enum como string
+      const refId = m.refId ?? "";
+
+      const cantidad = m.cantidad;  // int
+      const costoUnitario = m.costoUnitario
+        ? Number(m.costoUnitario)
+        : 0;
+      const pppAntes = m.pppAntes ? Number(m.pppAntes) : 0;
+      const pppDespues = m.pppDespues ? Number(m.pppDespues) : 0;
+
+      // Valor del movimiento (siempre positivo; el signo lo interpreta contabilidad según "tipo")
+      const valorMovimiento = cantidad * costoUnitario;
+
+      detalle.push({
+        fecha: m.createdAt,
+        sku,
+        nombreProd,
+        tipo,
+        cantidad,
+        costoUnitario,
+        pppAntes,
+        pppDespues,
+        valorMovimiento,
+        refTipo,
+        refId,
+      });
+
+      const key = sku || String(m.productoId);
+      if (!resumenPorProducto[key]) {
+        resumenPorProducto[key] = {
+          sku,
+          nombreProd,
+          movimientos: 0,
+          cantidadTotal: 0,
+          valorTotal: 0,
+        };
+      }
+      resumenPorProducto[key].movimientos += 1;
+      resumenPorProducto[key].cantidadTotal += cantidad;
+      resumenPorProducto[key].valorTotal += valorMovimiento;
     }
+
+    // -----------------------------
+    // Resumen por producto
+    // -----------------------------
+    const resumenRows = Object.values(resumenPorProducto).sort((a, b) =>
+      (a.sku || "").localeCompare(b.sku || "")
+    );
+
+    const lines = [];
+
+    // Metadatos
+    lines.push(
+      ["Histórico PPP de stock", "Fire Prevention", ""]
+        .map(escapeCsv)
+        .join(";")
+    );
+    lines.push(
+      ["Fecha reporte", formatFecha(ahora), ""]
+        .map(escapeCsv)
+        .join(";")
+    );
+    lines.push(""); // línea en blanco
+
+    // ----- SECCIÓN 1: RESUMEN POR PRODUCTO -----
+    lines.push(escapeCsv("RESUMEN POR PRODUCTO"));
+    const resumenHeaders = [
+      "SKU",
+      "Nombre producto",
+      "N° movimientos",
+      "Cantidad total movida (unid.)",
+      "Valor total movimientos (CLP)",
+    ];
+    lines.push(resumenHeaders.map(escapeCsv).join(";"));
+
+    for (const r of resumenRows) {
+      lines.push(
+        [
+          r.sku,
+          r.nombreProd,
+          r.movimientos,
+          r.cantidadTotal,
+          Math.round(r.valorTotal),
+        ].map(escapeCsv).join(";")
+      );
+    }
+
+    lines.push(""); // separación
+
+    // ----- SECCIÓN 2: DETALLE MOVIMIENTOS PPP -----
+    lines.push(escapeCsv("DETALLE MOVIMIENTOS PPP"));
+    const detalleHeaders = [
+      "Fecha movimiento",
+      "SKU",
+      "Nombre producto",
+      "Tipo movimiento",           // INGRESO / SALIDA / AJUSTE...
+      "Cantidad",
+      "Costo unitario (CLP)",
+      "PPP antes (CLP)",
+      "PPP después (CLP)",
+      "Valor movimiento (CLP)",
+      "Ref tipo",                 // INGRESO / SALIDA / AJUSTE...
+      "Ref ID",
+    ];
+    lines.push(detalleHeaders.map(escapeCsv).join(";"));
+
+    for (const d of detalle) {
+      lines.push(
+        [
+          formatFecha(d.fecha),
+          d.sku,
+          d.nombreProd,
+          d.tipo,
+          d.cantidad,
+          d.costoUnitario.toFixed(2),
+          d.pppAntes.toFixed(2),
+          d.pppDespues.toFixed(2),
+          Math.round(d.valorMovimiento),
+          d.refTipo,
+          d.refId ?? "",
+        ].map(escapeCsv).join(";")
+      );
+    }
+
+    // Enviar CSV
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=ppp_historico_contable.csv"
+    );
+    res.send(lines.join("\n"));
+  } catch (error) {
+    console.error("Error generando CSV de PPP histórico:", error);
+    res
+      .status(500)
+      .json({ error: "Error generando CSV de PPP histórico" });
+  }
+});
+
+/* =========================
+   Reportes CSV - Inventario general
+   ========================= */
+
+app.get("/reportes/inventario.csv", async (_req, res) => {
+  try {
+    const productos = await prisma.producto.findMany({
+      orderBy: [
+        { categoriaId: "asc" },
+        { nombre: "asc" },
+      ],
+      include: {
+        categoria: {
+          select: { codigo: true, nombre: true },
+        },
+        subcategoria: {
+          select: { nombre: true },
+        },
+        proveedor: {
+          select: { nombre: true, rut: true },
+        },
+      },
+    });
 
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     const ts = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="ppp_historico_${ts}.csv"`
+      `attachment; filename="inventario_${ts}.csv"`
     );
 
     const header =
-      "id,sku,nombre,sum_cantidad,sum_valor,ppp_historico\n";
+      [
+        "sku",
+        "nombre",
+        "descripcion",
+        "categoria",
+        "subcategoria",
+        "proveedor",
+        "stock",
+        "stock_minimo",
+        "ppp",
+        "stock_valorizado",
+        "actualizado_en",
+      ].join(",") + "\n";
+
     const body = productos
       .map((p) => {
-        const a = agg.get(p.id) || { q: 0, val: 0 };
-        const pppHist = a.q > 0 ? a.val / a.q : 0;
+        const categoria = p.categoria
+          ? `${p.categoria.codigo ?? ""} ${p.categoria.nombre ?? ""}`.trim()
+          : "";
+        const subcat = p.subcategoria?.nombre ?? "";
+        const proveedor = p.proveedor?.nombre ?? "";
+
+        const stock = p.stock ?? 0;
+        const stockMin = p.stockMinimo ?? 0;
+        const pppNum =
+          p.ppp == null
+            ? 0
+            : Number.parseFloat(String(p.ppp)) || 0;
+        const stockVal = (stock * pppNum).toFixed(2);
+
         return [
-          p.id,
           csvEscape(p.sku ?? ""),
           csvEscape(p.nombre ?? ""),
-          a.q,
-          a.val.toFixed(2),
-          pppHist.toFixed(4),
+          csvEscape(p.descripcion ?? ""),
+          csvEscape(categoria),
+          csvEscape(subcat),
+          csvEscape(proveedor),
+          stock,
+          stockMin,
+          pppNum.toFixed(2),
+          stockVal,
+          p.actualizadoEn?.toISOString?.() ?? "",
         ].join(",");
       })
       .join("\n");
 
     res.send(header + body);
   } catch (e) {
-    console.error(
-      "[GET /reportes/ppp_historico.csv] Error:",
-      e?.message || e
+    console.error("[GET /reportes/inventario.csv] Error:", e?.message || e);
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+/* =========================
+   Reportes CSV - Centros de costo / Proyectos
+   ========================= */
+
+app.get("/reportes/centros_costo.csv", async (_req, res) => {
+  try {
+    const proyectos = await prisma.proyecto.findMany({
+      orderBy: [
+        { activo: "desc" },
+        { nombre: "asc" },
+      ],
+      include: {
+        _count: { select: { movimientos: true } },
+      },
+    });
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    const ts = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="centros_costo_${ts}.csv"`
     );
+
+    const header =
+      [
+        "id",
+        "codigo",
+        "nombre",
+        "descripcion",
+        "estado",
+        "creado_en",
+        "actualizado_en",
+        "total_movimientos",
+      ].join(",") + "\n";
+
+    const body = proyectos
+      .map((p) =>
+        [
+          p.id,
+          csvEscape(p.codigo ?? ""),
+          csvEscape(p.nombre ?? ""),
+          csvEscape(p.descripcion ?? ""),
+          p.activo ? "ACTIVO" : "INACTIVO",
+          p.creadoEn.toISOString(),
+          p.actualizadoEn.toISOString(),
+          p._count?.movimientos ?? 0,
+        ].join(",")
+      )
+      .join("\n");
+
+    res.send(header + body);
+  } catch (e) {
+    console.error("[GET /reportes/centros_costo.csv] Error:", e?.message || e);
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+// =========================
+// Reporte Centros de Costo / Proyectos CSV
+// =========================
+
+app.get("/reportes/centros_costo.csv", async (req, res) => {
+  try {
+    const { q = "", soloActivos = "0" } = req.query;
+
+    const where = {};
+
+    // Filtro texto (igual que /proyectos)
+    if (typeof q === "string" && q.trim() !== "") {
+      const query = q.trim();
+      where.OR = [
+        { nombre: { contains: query, mode: "insensitive" } },
+        { codigo: { contains: query, mode: "insensitive" } },
+        { descripcion: { contains: query, mode: "insensitive" } },
+      ];
+    }
+
+    // Solo activos opcional
+    if (String(soloActivos) === "1") {
+      where.activo = true;
+    }
+
+    const proyectos = await prisma.proyecto.findMany({
+      where,
+      orderBy: [
+        { activo: "desc" }, // activos primero
+        { nombre: "asc" },
+      ],
+      include: {
+        _count: {
+          select: { movimientos: true },
+        },
+      },
+    });
+
+    // Headers CSV
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    const ts = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="centros_costo_${ts}.csv"`
+    );
+
+    // Encabezado
+    const header =
+      "id,nombre,codigo,descripcion,activo,creadoEn,actualizadoEn,movimientos\n";
+
+    // Filas
+    const body = proyectos
+      .map((p) =>
+        [
+          p.id,
+          csvEscape(p.nombre ?? ""),
+          csvEscape(p.codigo ?? ""),
+          csvEscape(p.descripcion ?? ""),
+          p.activo ? "1" : "0",
+          p.creadoEn.toISOString(),
+          p.actualizadoEn.toISOString(),
+          p._count?.movimientos ?? 0,
+        ].join(",")
+      )
+      .join("\n");
+
+    res.send(header + body);
+  } catch (e) {
+    console.error("[GET /reportes/centros_costo.csv] Error:", e);
     res.status(500).json({ error: e?.message || String(e) });
   }
 });
@@ -1644,7 +2046,6 @@ async function createSimpleNombreRoutes(path, model) {
 
 // Marcas y Proyectos
 createSimpleNombreRoutes("marcas", prisma.marca);
-createSimpleNombreRoutes("proyectos", prisma.proyecto);
 
 /* =========================
    Bodegas
@@ -2655,61 +3056,63 @@ app.post("/proyectos", async (req, res) => {
 /**
  * PUT /proyectos/:id
  */
+
 app.put("/proyectos/:id", async (req, res) => {
+  const id = Number(req.params.id);
+
+  console.log("[PUT /proyectos/:id] params.id:", id);
+  console.log("[PUT /proyectos/:id] raw body:", req.body);
+  console.log("[PUT /proyectos/:id] typeof activo:", typeof req.body.activo);
+
   try {
-    const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id <= 0) {
+    let { nombre, codigo, descripcion, activo } = req.body;
+
+    if (!nombre || typeof nombre !== "string") {
       return res
         .status(400)
-        .json({ error: "El id debe ser un número entero válido" });
+        .json({ error: "El nombre del proyecto es obligatorio" });
     }
 
-    const { nombre, codigo, descripcion, activo } = req.body || {};
+    // Normalizar strings vacíos a null
+    if (codigo === "") codigo = null;
+    if (descripcion === "") descripcion = null;
 
-    const data = {};
-
-    if (nombre !== undefined) {
-      if (!String(nombre).trim()) {
-        return res.status(400).json({
-          error: "El nombre del proyecto no puede estar vacío",
-        });
-      }
-      data.nombre = String(nombre).trim();
+    // ---------- PARSEAR ACTIVO ----------
+    let parsedActivo;
+    if (typeof activo === "boolean") {
+      parsedActivo = activo;
+    } else if (typeof activo === "string") {
+      const v = activo.toLowerCase().trim();
+      if (v === "true" || v === "1") parsedActivo = true;
+      else if (v === "false" || v === "0") parsedActivo = false;
     }
 
-    if (codigo !== undefined) {
-      data.codigo = normalizeNullableString(codigo);
+    const data = {
+      nombre,
+      codigo,
+      descripcion,
+    };
+
+    // SOLO si logramos interpretarlo como booleano, lo seteamos
+    if (typeof parsedActivo === "boolean") {
+      data.activo = parsedActivo;
     }
 
-    if (descripcion !== undefined) {
-      data.descripcion = normalizeNullableString(descripcion);
-    }
+    console.log("[PUT /proyectos/:id] data que se envía a Prisma:", data);
 
-    if (activo !== undefined) {
-      data.activo = Boolean(activo);
-    }
-
-    const actualizado = await prisma.proyecto.update({
+    const proyecto = await prisma.proyecto.update({
       where: { id },
       data,
     });
 
-    res.json(actualizado);
-  } catch (e) {
-    console.error("[PUT /proyectos/:id] Error:", e);
-
-    if (e && e.code === "P2002") {
-      return res.status(409).json({
-        error:
-          "Ya existe un proyecto con ese nombre o código. Ambos deben ser únicos.",
-      });
-    }
-
-    res.status(500).json({
-      error: e && e.message ? e.message : String(e),
-    });
+    res.json(proyecto);
+  } catch (err) {
+    console.error("[PUT /proyectos/:id] Error:", err);
+    res.status(500).json({ error: "Error actualizando proyecto" });
   }
 });
+
+
 
 /**
  * DELETE /proyectos/:id
@@ -2744,6 +3147,35 @@ app.delete("/proyectos/:id", async (req, res) => {
     });
   }
 });
+
+// PATCH /proyectos/:id/activo  -> cambiar activo/inactivo
+app.patch("/proyectos/:id/activo", async (req, res) => {
+  const id = Number(req.params.id);
+  const { activo } = req.body;
+
+  if (!Number.isFinite(id)) {
+    return res.status(400).json({ error: "ID inválido" });
+  }
+  if (typeof activo !== "boolean") {
+    return res
+      .status(400)
+      .json({ error: "El campo 'activo' debe ser booleano" });
+  }
+
+  try {
+    const proyecto = await prisma.proyecto.update({
+      where: { id },
+      data: { activo },
+    });
+    res.json(proyecto);
+  } catch (err) {
+    console.error("[PATCH /proyectos/:id/activo] Error:", err);
+    return res
+      .status(500)
+      .json({ error: "Error al actualizar estado del proyecto" });
+  }
+});
+
 
 // utils opcional
 function toStringOrNull(value) {
