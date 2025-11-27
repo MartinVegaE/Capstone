@@ -17,6 +17,7 @@ export interface User {
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
+  isAuthenticated: boolean;               // 👈 NUEVO
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
 }
@@ -85,8 +86,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.localStorage.removeItem(STORAGE_KEY);
   }
 
+  const isAuthenticated = !!user;          // 👈 derivado del user
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        loading,
+        isAuthenticated,                  // 👈 lo exponemos en el contexto
+        login,
+        logout,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

@@ -1,11 +1,7 @@
-// src/pages/Dashboard.tsx
-import React from "react";
 import { Link } from "react-router-dom";
 
 export default function DashboardPage() {
   const now = new Date();
-  const hour = now.getHours();
-
 
   const today = new Intl.DateTimeFormat("es-CL", {
     weekday: "long",
@@ -53,10 +49,6 @@ export default function DashboardPage() {
           title="Inventario de productos"
           description="Mantén el catálogo al día, controla stock mínimo y revisa movimientos de entrada y salida."
           primaryLink={{ to: "/productos", label: "Ir a productos" }}
-          secondaryLinks={[
-            { to: "/movimientos", label: "Movimientos de stock" },
-            { to: "/ingresos", label: "Ingresos de mercadería" },
-          ]}
           chips={["SKUs críticos", "Stock mínimo", "Lotes en tránsito"]}
         />
 
@@ -69,9 +61,6 @@ export default function DashboardPage() {
             to: "/movimientos",
             label: "Salidas a proyectos",
           }}
-          secondaryLinks={[
-            { to: "/proyectos/retornos", label: "Retornos de proyectos" },
-          ]}
           chips={["Material en obra", "Devoluciones pendientes"]}
         />
 
@@ -81,12 +70,6 @@ export default function DashboardPage() {
           title="Proveedores y devoluciones"
           description="Administra el maestro de proveedores y registra devoluciones de materiales hacia ellos."
           primaryLink={{ to: "/proveedores", label: "Ver proveedores" }}
-          secondaryLinks={[
-            {
-              to: "/devoluciones/proveedor",
-              label: "Devoluciones a proveedor",
-            },
-          ]}
           chips={["OC abiertas", "Garantías", "Material defectuoso"]}
         />
       </div>

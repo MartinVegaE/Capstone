@@ -1,5 +1,5 @@
 // src/pages/Movements.tsx
-import React, {
+import {
   Fragment,
   useMemo,
   useState,
@@ -21,16 +21,17 @@ type MovimientoItem = {
   sku: string;
   nombre: string;
   cantidad: number;
-  costoUnitario?: number;
+  costoUnitario?: number | string | null;
 };
 
 type MovimientoSalida = {
   id: number;
   fecha: string; // ISO
-  tipo: "Salida" | "Retorno";
-  proyecto: string;
-  documento: string;
-  observacion: string;
+  // el backend puede mandar "Salida", "SALIDA", "Retorno", etc.
+  tipo: string;
+  proyecto: string | null;
+  documento: string | null;
+  observacion: string | null;
   items: MovimientoItem[];
 };
 
@@ -44,6 +45,17 @@ type Proyecto = {
   nombre: string;
 };
 
+// Lo que venga del backend al llamar /productos
+type ProductoBackend = {
+  id: number;
+  sku?: string | null;
+  nombre?: string | null;
+  codigoBarras?: string | null;
+  codigo_barra?: string | null;
+  codigo?: string | null;
+};
+
+// Lo que usamos en el combo del formulario
 type ProductoCombo = {
   id: number;
   sku: string;
@@ -51,8 +63,8 @@ type ProductoCombo = {
   codigoBarras?: string | null;
 };
 
-type ProductosListResponse = {
-  data: ProductoCombo[];
+type ProductosListResponseShape1 = {
+  data: ProductoBackend[];
   total: number;
 };
 
@@ -71,6 +83,8 @@ type NuevaMovimientoPayload = {
   observacion: string | null;
   items: { sku: string; cantidad: number }[];
 };
+
+type TipoFiltro = "ALL" | "SALIDA" | "RETORNO";
 
 type NuevaMovimientoConTipo = NuevaMovimientoPayload & {
   tipo: "SALIDA" | "RETORNO";
@@ -99,21 +113,50 @@ function money(n: number) {
 
 function calcTotal(items: MovimientoItem[]) {
   return items.reduce((acc, it) => {
-    const c = it.costoUnitario ?? 0;
+    const raw = it.costoUnitario ?? 0;
+    const c =
+      typeof raw === "string" ? Number(raw) : (raw as number) ?? 0;
+    if (!Number.isFinite(c)) return acc;
     return acc + it.cantidad * c;
   }, 0);
+}
+
+function formatTipoLabel(tipo: string) {
+  const t = (tipo || "").toUpperCase();
+  if (t === "SALIDA") return "Salida";
+  if (t === "RETORNO") return "Retorno";
+  return tipo || "—";
+}
+
+function tipoBadgeClasses(tipo: string) {
+  const t = (tipo || "").toUpperCase();
+  if (t === "SALIDA") {
+    return "bg-rose-50 text-rose-700 border border-rose-100";
+  }
+  if (t === "RETORNO") {
+    return "bg-emerald-50 text-emerald-700 border border-emerald-100";
+  }
+  return "bg-slate-100 text-slate-700 border border-slate-200";
+}
+
+function filtroLabel(tipo: TipoFiltro) {
+  if (tipo === "ALL") return "Salidas y devoluciones";
+  if (tipo === "SALIDA") return "Solo egresos (salidas)";
+  return "Solo devoluciones desde proyecto";
 }
 
 /* =========================
    Fetchers
    ========================= */
 
-async function fetchSalidas(): Promise<MovimientosResponse> {
+async function fetchMovimientos(
+  tipo: TipoFiltro
+): Promise<MovimientosResponse> {
   const res = await http.get<MovimientosResponse>(
     "/proyectos/movimientos",
     {
       params: {
-        tipo: "SALIDA",
+        tipo, // "ALL" | "SALIDA" | "RETORNO"
         page: 1,
         pageSize: 20,
       },
@@ -127,46 +170,49 @@ async function fetchProyectosAll(): Promise<Proyecto[]> {
   return res.data;
 }
 
-// Usa el listado general de productos para alimentar el combo
+// Productos para combo de egreso (SKU/nombre/código barras)
 async function fetchProductosCombo(): Promise<ProductoCombo[]> {
   const res = await http.get("/productos", {
     params: {
       page: 1,
-      pageSize: 500, // ajusta si necesitas
+      pageSize: 500,
     },
   });
 
   const body: any = res.data;
+  console.log("Respuesta /productos (combo movimientos):", body);
 
-  // Para depurar si quieres ver qué viene realmente:
-  console.log("Respuesta /productos para combo:", body);
-
-  let productos: any[] = [];
+  let productosRaw: ProductoBackend[] = [];
 
   // Soportamos varias formas típicas:
   if (Array.isArray(body)) {
     // Caso: el backend devuelve directamente [ { ...producto }, ... ]
-    productos = body;
+    productosRaw = body as ProductoBackend[];
   } else if (Array.isArray(body.data)) {
     // Caso: { data: [ ... ], total: n }
-    productos = body.data;
+    productosRaw = (body as ProductosListResponseShape1).data;
   } else if (Array.isArray(body.productos)) {
     // Caso: { productos: [ ... ], total: n }
-    productos = body.productos;
+    productosRaw = body.productos as ProductoBackend[];
   } else {
-    // Nada reconocible: dejamos lista vacía (no lanza error)
-    productos = [];
+    productosRaw = [];
   }
 
-  // Normalizamos al tipo que usa el combo
-  return productos.map((p) => ({
+  // Normalizamos
+  const productos: ProductoCombo[] = productosRaw.map((p) => ({
     id: p.id,
     sku: p.sku ?? "",
     nombre: p.nombre ?? "",
-    // intentamos varios nombres posibles
     codigoBarras:
       p.codigoBarras ?? p.codigo_barra ?? p.codigo ?? null,
   }));
+
+  console.log(
+    "Productos normalizados para combo movimientos:",
+    productos
+  );
+
+  return productos;
 }
 
 /* =========================
@@ -178,6 +224,8 @@ export default function MovementsPage() {
 
   // Listado
   const [search, setSearch] = useState("");
+  const [tipoFiltro, setTipoFiltro] =
+    useState<TipoFiltro>("ALL");
 
   // Qué formulario está abierto: SALIDA (egreso) o RETORNO
   const [activeForm, setActiveForm] =
@@ -205,20 +253,20 @@ export default function MovementsPage() {
   /* ========== Datos del listado ========== */
 
   const {
-    data: salidasData,
+    data: movimientosData,
     isLoading,
     isError,
   } = useQuery({
-    queryKey: ["proyectos", "salidas"],
-    queryFn: fetchSalidas,
+    queryKey: ["proyectos", "movimientos", tipoFiltro],
+    queryFn: () => fetchMovimientos(tipoFiltro),
   });
 
-  const salidas = salidasData?.data ?? [];
+  const movimientos = movimientosData?.data ?? [];
 
-  const filteredSalidas = useMemo(() => {
+  const filteredMovimientos = useMemo(() => {
     const term = search.trim().toLowerCase();
-    if (!term) return salidas;
-    return salidas.filter((mov) => {
+    if (!term) return movimientos;
+    return movimientos.filter((mov) => {
       const proyecto = (mov.proyecto ?? "").toLowerCase();
       const doc = (mov.documento ?? "").toLowerCase();
       const obs = (mov.observacion ?? "").toLowerCase();
@@ -235,7 +283,7 @@ export default function MovementsPage() {
         itemsText.includes(term)
       );
     });
-  }, [salidas, search]);
+  }, [movimientos, search]);
 
   /* ========== Proyectos para el combo ========== */
 
@@ -270,9 +318,9 @@ export default function MovementsPage() {
     isLoading: loadingProductos,
     isError: errorProductos,
   } = useQuery({
-    queryKey: ["productos", "combo"],
+    queryKey: ["productos", "combo-movimientos"],
     queryFn: fetchProductosCombo,
-    enabled: isOpen,
+    // sin enabled: isOpen -> lo cargamos una vez y queda en caché
   });
 
   const productos = productosData ?? [];
@@ -289,13 +337,11 @@ export default function MovementsPage() {
       const res = await http.post(url, body);
       return res.data;
     },
-    onSuccess: (_data, variables) => {
-      if (variables.tipo === "SALIDA") {
-        // Solo las salidas se listan en esta página
-        queryClient.invalidateQueries({
-          queryKey: ["proyectos", "salidas"],
-        });
-      }
+    onSuccess: () => {
+      // invalidamos todos los listados de movimientos (ALL/SALIDA/RETORNO)
+      queryClient.invalidateQueries({
+        queryKey: ["proyectos", "movimientos"],
+      });
       resetForm();
       setActiveForm(null);
     },
@@ -417,6 +463,8 @@ export default function MovementsPage() {
     ? "Registrar egreso"
     : "Registrar devolución";
 
+  const badgeLabel = filtroLabel(tipoFiltro);
+
   /* ========== Render ========== */
 
   return (
@@ -429,9 +477,9 @@ export default function MovementsPage() {
               Salidas y devoluciones de proyecto
             </h2>
             <p className="mt-1 max-w-2xl text-sm text-slate-500">
-              Registra egresos de bodega hacia proyectos y devoluciones
-              de material sobrante. El sistema mantiene el PPP vigente y
-              la trazabilidad por proyecto.
+              Registra egresos de bodega hacia proyectos y
+              devoluciones de material sobrante. El sistema mantiene
+              el PPP vigente y la trazabilidad por proyecto.
             </p>
           </div>
           <div className="flex flex-col gap-2 sm:items-end">
@@ -465,39 +513,81 @@ export default function MovementsPage() {
               className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm placeholder:text-slate-400 focus:border-rose-500 focus:outline-none focus:ring-1 focus:ring-rose-500"
             />
           </div>
-          <div className="flex items-center gap-2 text-xs text-slate-500">
-            <span className="rounded-full bg-slate-100 px-2 py-0.5">
-              {isLoading
-                ? "Cargando egresos..."
-                : `Total: ${filteredSalidas.length} egresos`}
-            </span>
+
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+            {/* Filtro tipo */}
+            <div className="inline-flex rounded-full bg-slate-100 p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setTipoFiltro("ALL")}
+                className={`rounded-full px-3 py-1 font-medium ${
+                  tipoFiltro === "ALL"
+                    ? "bg-white text-slate-900 shadow-sm"
+                    : "text-slate-600"
+                }`}
+              >
+                Todos
+              </button>
+              <button
+                type="button"
+                onClick={() => setTipoFiltro("SALIDA")}
+                className={`rounded-full px-3 py-1 font-medium ${
+                  tipoFiltro === "SALIDA"
+                    ? "bg-white text-slate-900 shadow-sm"
+                    : "text-slate-600"
+                }`}
+              >
+                Salidas
+              </button>
+              <button
+                type="button"
+                onClick={() => setTipoFiltro("RETORNO")}
+                className={`rounded-full px-3 py-1 font-medium ${
+                  tipoFiltro === "RETORNO"
+                    ? "bg-white text-slate-900 shadow-sm"
+                    : "text-slate-600"
+                }`}
+              >
+                Devoluciones
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <span className="rounded-full bg-slate-100 px-2 py-0.5">
+                {isLoading
+                  ? "Cargando movimientos..."
+                  : `Total: ${filteredMovimientos.length} movimientos`}
+              </span>
+            </div>
           </div>
         </div>
 
-        {/* Tabla de salidas */}
+        {/* Tabla de movimientos */}
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2">
             <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              Últimos egresos registrados
+              Últimos movimientos registrados
             </span>
             <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-medium text-rose-600">
-              Solo egresos (salidas)
+              {badgeLabel}
             </span>
           </div>
 
           {isError && (
             <div className="p-4 text-sm text-red-600">
-              Error cargando salidas de proyecto.
+              Error cargando movimientos de proyecto.
             </div>
           )}
 
-          {!isError && filteredSalidas.length === 0 && !isLoading && (
-            <div className="p-4 text-sm text-slate-500">
-              Aún no hay salidas registradas.
-            </div>
-          )}
+          {!isError &&
+            filteredMovimientos.length === 0 &&
+            !isLoading && (
+              <div className="p-4 text-sm text-slate-500">
+                Aún no hay movimientos registrados.
+              </div>
+            )}
 
-          {!isError && filteredSalidas.length > 0 && (
+          {!isError && filteredMovimientos.length > 0 && (
             <table className="min-w-full divide-y divide-slate-100 text-sm">
               <thead className="bg-slate-50">
                 <tr>
@@ -516,10 +606,13 @@ export default function MovementsPage() {
                   <th className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
                     Total aprox.
                   </th>
+                  <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Tipo
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredSalidas.map((mov) => {
+                {filteredMovimientos.map((mov) => {
                   const total = calcTotal(mov.items);
                   const resumenItems = mov.items
                     .slice(0, 3)
@@ -531,7 +624,10 @@ export default function MovementsPage() {
                       : "";
 
                   return (
-                    <tr key={mov.id} className="hover:bg-slate-50/60">
+                    <tr
+                      key={mov.id}
+                      className="hover:bg-slate-50/60"
+                    >
                       <td className="whitespace-nowrap px-4 py-2 text-slate-700">
                         {formatDateShort(mov.fecha)}
                       </td>
@@ -555,6 +651,15 @@ export default function MovementsPage() {
                       <td className="whitespace-nowrap px-4 py-2 text-right text-slate-900">
                         {total > 0 ? `$${money(total)}` : "—"}
                       </td>
+                      <td className="whitespace-nowrap px-4 py-2 text-left">
+                        <span
+                          className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${tipoBadgeClasses(
+                            mov.tipo
+                          )}`}
+                        >
+                          {formatTipoLabel(mov.tipo)}
+                        </span>
+                      </td>
                     </tr>
                   );
                 })}
@@ -564,7 +669,7 @@ export default function MovementsPage() {
         </div>
       </div>
 
-      {/* Slide-over formulario (mismo patrón que productos/ingresos) */}
+      {/* Slide-over formulario (egreso / retorno) */}
       <Transition.Root show={isOpen} as={Fragment}>
         <Dialog
           as="div"
@@ -629,28 +734,34 @@ export default function MovementsPage() {
                                 }
                                 value={proyectoSearch}
                                 onChange={(e) =>
-                                  setProyectoSearch(e.target.value)
+                                  setProyectoSearch(
+                                    e.target.value
+                                  )
                                 }
                                 disabled={loadingProyectos}
                                 className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-rose-500 focus:outline-none focus:ring-1 focus:ring-rose-500"
                               />
                               {hayProyectosSugeridos && (
                                 <div className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-xl border border-slate-200 bg-white shadow-lg">
-                                  {proyectosFiltrados.map((p) => (
-                                    <button
-                                      key={p.id}
-                                      type="button"
-                                      onClick={() => {
-                                        setSelectedProyecto(p);
-                                        setProyectoSearch("");
-                                      }}
-                                      className="flex w-full flex-col items-start px-3 py-2 text-left text-sm hover:bg-slate-50"
-                                    >
-                                      <span className="font-medium text-slate-900">
-                                        {p.nombre}
-                                      </span>
-                                    </button>
-                                  ))}
+                                  {proyectosFiltrados.map(
+                                    (p) => (
+                                      <button
+                                        key={p.id}
+                                        type="button"
+                                        onClick={() => {
+                                          setSelectedProyecto(
+                                            p
+                                          );
+                                          setProyectoSearch("");
+                                        }}
+                                        className="flex w-full flex-col items-start px-3 py-2 text-left text-sm hover:bg-slate-50"
+                                      >
+                                        <span className="font-medium text-slate-900">
+                                          {p.nombre}
+                                        </span>
+                                      </button>
+                                    )
+                                  )}
                                 </div>
                               )}
                             </div>
@@ -673,8 +784,8 @@ export default function MovementsPage() {
                             )}
                           </div>
                           <p className="mt-1 text-[11px] text-slate-500">
-                            Si el proyecto no aparece, primero créalo en
-                            el módulo correspondiente.
+                            Si el proyecto no aparece, primero
+                            créalo en el módulo correspondiente.
                           </p>
                         </div>
 
@@ -687,7 +798,9 @@ export default function MovementsPage() {
                               type="text"
                               value={documento}
                               onChange={(e) =>
-                                setDocumento(e.target.value)
+                                setDocumento(
+                                  e.target.value
+                                )
                               }
                               placeholder="OC-123, GD-5..."
                               className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-rose-500 focus:outline-none focus:ring-1 focus:ring-rose-500"
@@ -702,7 +815,9 @@ export default function MovementsPage() {
                               type="text"
                               value={observacion}
                               onChange={(e) =>
-                                setObservacion(e.target.value)
+                                setObservacion(
+                                  e.target.value
+                                )
                               }
                               placeholder={
                                 isSalidaForm
@@ -732,7 +847,8 @@ export default function MovementsPage() {
 
                         <div className="mt-3 space-y-3">
                           {items.map((it, index) => {
-                            const term = it.search.trim().toLowerCase();
+                            const term =
+                              it.search.trim().toLowerCase();
                             const sugerencias =
                               term && productos.length > 0
                                 ? productos
@@ -740,7 +856,9 @@ export default function MovementsPage() {
                                       const sku =
                                         (p.sku ?? "").toLowerCase();
                                       const nombre =
-                                        (p.nombre ?? "").toLowerCase();
+                                        (
+                                          p.nombre ?? ""
+                                        ).toLowerCase();
                                       const cb = (
                                         p.codigoBarras ?? ""
                                       ).toLowerCase();
@@ -769,7 +887,9 @@ export default function MovementsPage() {
                                     <button
                                       type="button"
                                       onClick={() =>
-                                        handleEliminarItem(it.id)
+                                        handleEliminarItem(
+                                          it.id
+                                        )
                                       }
                                       className="text-xs text-slate-500 hover:text-red-600"
                                     >
@@ -782,7 +902,8 @@ export default function MovementsPage() {
                                   {/* Búsqueda de producto (SKU, nombre, código de barras) */}
                                   <div className="md:col-span-2">
                                     <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                                      Producto (SKU, nombre o código de barras)
+                                      Producto (SKU, nombre o
+                                      código de barras)
                                     </label>
                                     <div className="relative mt-1">
                                       <input
@@ -800,43 +921,59 @@ export default function MovementsPage() {
                                             ? "Cargando productos..."
                                             : "Escanea o busca por SKU, nombre o código..."
                                         }
-                                        disabled={loadingProductos}
+                                        disabled={
+                                          loadingProductos
+                                        }
                                         className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-rose-500 focus:outline-none focus:ring-2 focus:ring-rose-500/20"
                                       />
 
                                       {haySugerencias && (
                                         <div className="absolute z-30 mt-1 max-h-60 w-full overflow-auto rounded-xl border border-slate-200 bg-white shadow-lg">
-                                          {sugerencias.map((p) => (
-                                            <button
-                                              key={p.id}
-                                              type="button"
-                                              onClick={() => {
-                                                setItems((prev) =>
-                                                  prev.map((row) =>
-                                                    row.id === it.id
-                                                      ? {
-                                                          ...row,
-                                                          sku: p.sku,
-                                                          nombre: p.nombre,
-                                                          search: `${p.sku} – ${p.nombre}`,
-                                                        }
-                                                      : row
-                                                  )
-                                                );
-                                              }}
-                                              className="flex w-full flex-col items-start px-3 py-2 text-left text-xs hover:bg-slate-50"
-                                            >
-                                              <span className="font-medium text-slate-900">
-                                                {p.sku} · {p.nombre}
-                                              </span>
-                                              {p.codigoBarras && (
-                                                <span className="text-[11px] text-slate-500">
-                                                  Cód. barras:{" "}
-                                                  {p.codigoBarras}
+                                          {sugerencias.map(
+                                            (p) => (
+                                              <button
+                                                key={p.id}
+                                                type="button"
+                                                onClick={() => {
+                                                  setItems(
+                                                    (
+                                                      prev
+                                                    ) =>
+                                                      prev.map(
+                                                        (
+                                                          row
+                                                        ) =>
+                                                          row.id ===
+                                                          it.id
+                                                            ? {
+                                                                ...row,
+                                                                sku: p.sku,
+                                                                nombre:
+                                                                  p.nombre,
+                                                                search: `${p.sku} – ${p.nombre}`,
+                                                              }
+                                                            : row
+                                                      )
+                                                  );
+                                                }}
+                                                className="flex w-full flex-col items-start px-3 py-2 text-left text-xs hover:bg-slate-50"
+                                              >
+                                                <span className="font-medium text-slate-900">
+                                                  {p.sku} ·{" "}
+                                                  {p.nombre}
                                                 </span>
-                                              )}
-                                            </button>
-                                          ))}
+                                                {p.codigoBarras && (
+                                                  <span className="text-[11px] text-slate-500">
+                                                    Cód.
+                                                    barras:{" "}
+                                                    {
+                                                      p.codigoBarras
+                                                    }
+                                                  </span>
+                                                )}
+                                              </button>
+                                            )
+                                          )}
                                         </div>
                                       )}
                                     </div>
@@ -901,13 +1038,41 @@ export default function MovementsPage() {
                         </div>
                       </div>
 
-                      {crearMovimientoMutation.isError && (
-                        <div className="text-sm text-red-600">
-                          {(crearMovimientoMutation.error as Error)
-                            ?.message ||
-                            "Error al registrar el movimiento."}
-                        </div>
-                      )}
+                      {crearMovimientoMutation.isError &&
+                        (() => {
+                          const err: any =
+                            crearMovimientoMutation.error;
+                          const status =
+                            err?.response?.status;
+                          const serverError =
+                            err?.response?.data?.error;
+
+                          // Log técnico para ti (DevTools)
+                          console.error(
+                            "Error al registrar movimiento:",
+                            err
+                          );
+
+                          let msg =
+                            "Error al registrar el movimiento.";
+                          if (
+                            status === 400 &&
+                            typeof serverError === "string"
+                          ) {
+                            // Errores de validación comprensibles (stock, datos, etc.)
+                            msg = serverError;
+                          } else if (status >= 500) {
+                            // Errores internos (bugs)
+                            msg =
+                              "Ocurrió un error interno al registrar el movimiento. Intenta nuevamente o avisa al administrador.";
+                          }
+
+                          return (
+                            <div className="text-sm text-red-600">
+                              {msg}
+                            </div>
+                          );
+                        })()}
                     </div>
 
                     {/* Footer acciones */}
