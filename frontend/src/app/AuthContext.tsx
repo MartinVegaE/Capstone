@@ -1,5 +1,4 @@
-// src/app/AuthContext.tsx
-import React, {
+import {
   createContext,
   useContext,
   useState,

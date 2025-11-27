@@ -90,6 +90,15 @@ const CATEGORY_OPTIONS = [
 const PLACEHOLDER_IMG =
   "https://via.placeholder.com/80x80.png?text=Producto";
 
+// Base del API para exportar CSV
+const API_BASE =
+  import.meta.env.VITE_API_URL ?? "http://localhost:4000";
+
+function openCsv(path: string) {
+  const url = `${API_BASE}${path}`;
+  window.open(url, "_blank");
+}
+
 function inferCategoriaFromSku(sku: string): string {
   const prefix = sku.split("-")[0] || "";
   const match = CATEGORY_OPTIONS.find((c) => c.code === prefix);
@@ -653,7 +662,25 @@ export default function ProductsPage() {
               promedio ponderado) y valor total de stock.
             </p>
           </div>
-          <div className="flex w-full justify-start gap-2 sm:w-auto sm:justify-end">
+          <div className="flex w-full flex-wrap justify-start gap-2 sm:w-auto sm:justify-end">
+            <button
+              type="button"
+              onClick={() => openCsv("/reportes/ppp.csv")}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+            >
+              <span>📥</span>
+              <span>PPP actual (CSV)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                openCsv("/reportes/ppp_historico.csv")
+              }
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+            >
+              <span>📊</span>
+              <span>PPP histórico (CSV)</span>
+            </button>
             <button
               type="button"
               onClick={() => setIsSubcatOpen(true)}
