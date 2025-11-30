@@ -6,8 +6,8 @@ import  {
 } from "react";
 import { useAuth } from "../../app/AuthContext";
 
-const INACTIVITY_LIMIT_MS = 10 * 60 * 1000;
-const WARNING_DURATION_MS = 30 * 1000;
+const INACTIVITY_LIMIT_MS = 60 * 1000;
+const WARNING_DURATION_MS = 15 * 1000;
 const WARNING_DURATION_SECONDS = WARNING_DURATION_MS / 1000;
 
 interface SessionTimeoutManagerProps {

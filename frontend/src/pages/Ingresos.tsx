@@ -77,7 +77,6 @@ type ItemDraft = {
   cantidad: string;
   costoUnitario: string;
   stockMinimo: string;
-  // estado solo de UI para el buscador de productos
   searchTerm?: string;
   searchResults?: ProductoBusqueda[];
   searchLoading?: boolean;
@@ -212,7 +211,7 @@ export default function IngresosPage() {
     queryFn: fetchIngresos,
   });
 
-  // Catálogo de categorías y subcategorías (desde backend)
+  // Catálogo de categorías y subcategorías
   const {
     data: categorias,
     isLoading: loadingCategorias,
@@ -255,7 +254,6 @@ export default function IngresosPage() {
     [categorias]
   );
 
-  // Datos del drawer
   const [tipoDocumento, setTipoDocumento] = useState("FACTURA");
   const [numeroDocumento, setNumeroDocumento] = useState("");
   const [observacion, setObservacion] = useState("");
@@ -277,7 +275,6 @@ export default function IngresosPage() {
     },
   ]);
 
-  // Proveedor combo
   const [proveedorSearch, setProveedorSearch] = useState("");
   const [selectedProveedor, setSelectedProveedor] =
     useState<Proveedor | null>(null);
@@ -290,14 +287,13 @@ export default function IngresosPage() {
 
   const proveedores = proveedoresData ?? [];
 
-  // Bodega principal
   const { data: bodegaPrincipal } = useQuery({
     queryKey: ["bodega-principal"],
     queryFn: fetchBodegaPrincipal,
     enabled: nuevoAbierto,
   });
 
-  /* ========== Mutación: crear ingreso ========== */
+  /* Crear ingreso */
 
   const crearIngresoMutation = useMutation({
     mutationFn: async () => {
@@ -425,16 +421,12 @@ export default function IngresosPage() {
     prev.map((it) => {
       if (it.id !== id) return it;
 
-      // Prefijos conocidos de SKU por categoría
       const knownPrefixes = CATEGORIAS_STATIC.map(
         (c) => `${c.value}-`
       );
 
       let newSku = it.sku;
-
-      // Solo sobreescribimos el SKU si:
-      // - está vacío, o
-      // - ya tenía un prefijo de categoría (EXT-, DET-, etc.)
+      
       if (
         !newSku ||
         knownPrefixes.some((pref) => newSku.startsWith(pref))

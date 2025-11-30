@@ -2,7 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
-const { PrismaClient, RefTipo, ProyectoMovTipo } = require("@prisma/client");
+const { PrismaClient, RefTipo, ProyectoMovTipo, Prisma} = require("@prisma/client");
 
 const prisma = new PrismaClient();
 const app = express();
@@ -121,7 +121,6 @@ app.post("/login", async (req, res) => {
 
     const emailNorm = String(email).trim().toLowerCase();
 
-    // 👇 SIN `mode`, y usando findUnique porque email es @unique
     const user = await prisma.user.findUnique({
       where: { email: emailNorm },
     });
@@ -131,7 +130,6 @@ app.post("/login", async (req, res) => {
       return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
-    // Compatibilidad: passwordHash nuevo / password viejo (si existe)
     const stored = user.passwordHash || user.password || null;
 
     if (!stored) {
@@ -195,7 +193,7 @@ app.get("/productos", async (_req, res) => {
 });
 
 
-// CREAR producto (con categoría, subcategoría opcional y proveedor obligatorio)
+// CREAR producto
 app.post("/productos", async (req, res) => {
   try {
     console.log("[POST /productos] body:", req.body);
@@ -464,35 +462,65 @@ app.put("/productos/:id", async (req, res) => {
 
 // ELIMINAR producto
 app.delete("/productos/:id", async (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id <= 0) {
-    return res.status(400).json({ error: "id inválido" });
-  }
+  const id = parseInt(req.params.id, 10);
+  console.log("[DELETE /productos/:id] id =", id);
 
   try {
-    await prisma.producto.delete({
-      where: { id },
-    });
+    // Verificar si el producto tiene registros asociados
+    const [
+      ingresosItems,
+      stockMovimientos,
+      movProyectoItems,
+      devolucionesProveedorItems,
+    ] = await Promise.all([
+      prisma.ingresoItem.count({ where: { productoId: id } }),
+      prisma.stockMovimiento.count({ where: { productoId: id } }),
+      prisma.movimientoProyectoItem
+        ? prisma.movimientoProyectoItem.count({ where: { productoId: id } })
+        : Promise.resolve(0),
+      prisma.devolucionProveedorItem
+        ? prisma.devolucionProveedorItem.count({ where: { productoId: id } })
+        : Promise.resolve(0),
+    ]);
 
-    return res.json({ ok: true });
-  } catch (err) {
-    // Caso típico: P2003 = constraint de FK
-    if (
-      err instanceof Prisma.PrismaClientKnownRequestError &&
-      err.code === "P2003"
-    ) {
+    const tieneReferencias =
+      ingresosItems > 0 ||
+      stockMovimientos > 0 ||
+      movProyectoItems > 0 ||
+      devolucionesProveedorItems > 0;
+
+    if (tieneReferencias) {
+      // Regla de negocio: no se permite borrar
       return res.status(409).json({
-        error:
-          "No se puede eliminar el producto porque tiene movimientos asociados (ingresos, salidas o devoluciones).",
+        ok: false,
+        message:
+          "No se puede eliminar el producto porque tiene ingresos, movimientos o devoluciones asociadas. " +
+          "Márcalo como inactivo si ya no se usa.",
       });
     }
 
-    console.error("Error eliminando producto:", err);
+    // Si no tiene hijos, se puede borrar
+    await prisma.producto.delete({ where: { id } });
+
+    return res.status(204).send();
+  } catch (error) {
+    console.error("[DELETE /productos/:id] Error eliminando producto:", error);
+
+    if (error.code === "P2003") {
+      return res.status(409).json({
+        ok: false,
+        message:
+          "No se puede eliminar el producto porque está referenciado por otros registros.",
+      });
+    }
+
     return res
       .status(500)
-      .json({ error: "Error interno al eliminar el producto." });
+      .json({ ok: false, message: "Error interno eliminando producto" });
   }
 });
+
+
 // Actualizar SOLO stock (no PPP)
 app.patch("/productos/:id", async (req, res) => {
   const id = Number(req.params.id);
@@ -561,7 +589,7 @@ async function registrarRetorno(tx, params) {
     throw new Error("refTipo es obligatorio en registrarRetorno");
   }
 
-  // 1) Traer producto
+  // Traer producto
   const prod = await tx.producto.findUnique({
     where: { id: productoId },
     select: { id: true, stock: true, ppp: true },
@@ -571,24 +599,24 @@ async function registrarRetorno(tx, params) {
     throw new Error(`Producto con id ${productoId} no existe`);
   }
 
-  // 2) PPP antes/después (no cambia en un retorno)
+  // PPP antes/después (no cambia en un retorno)
   const pppActual = prod.ppp ?? 0;
 
-  // 3) Registrar movimiento de stock (IN)
+  // Registrar movimiento de stock (IN)
   await tx.stockMovimiento.create({
     data: {
       productoId,
-      tipo: "IN",           // Enum MovimientoTipo.IN
+      tipo: "IN",
       cantidad,
       costoUnitario: null,
       pppAntes: pppActual,
       pppDespues: pppActual,
-      refTipo,              // 👈 otra vez, valor que viene del caller
+      refTipo,
       refId: refId ?? null,
     },
   });
 
-  // 4) Actualizar stock del producto
+  // Actualizar stock del producto
   await tx.producto.update({
     where: { id: productoId },
     data: {
@@ -615,7 +643,6 @@ async function resolveProyecto(arg1, arg2) {
     } else if (from.id != null) {
       proyectoIdRaw = from.id;
     } else if (from.proyecto && typeof from.proyecto === "object") {
-      // por compatibilidad: body.proyecto.id
       proyectoIdRaw = from.proyecto.id;
     } else {
       proyectoIdRaw = undefined;
@@ -643,8 +670,7 @@ async function resolveProyecto(arg1, arg2) {
 
 
 async function resolveBodegaInicial() {
-  // Por ahora usamos la primera bodega que exista.
-  // Si después tienes un flag "esPrincipal" o similar, se cambia aquí.
+
   const bodega = await prisma.bodega.findFirst();
 
   if (!bodega) {
@@ -657,8 +683,6 @@ async function resolveBodegaInicial() {
 }
 
 
-
-// Stub para ajustes manuales futuros, ahora con validación y mensajes claros
 app.post("/movimientos", async (req, res) => {
   try {
     console.log("[POST /movimientos] body:", req.body);
@@ -710,8 +734,6 @@ app.post("/movimientos", async (req, res) => {
       });
     }
 
-    // Si quieres que este endpoint siempre se use con proyecto:
-    // (puedes quitar esta validación si decides usarlo solo para ajustes de bodega)
     if (
       proyectoId != null &&
       (!Number.isInteger(proyectoId) || proyectoId <= 0)
@@ -721,11 +743,6 @@ app.post("/movimientos", async (req, res) => {
           "Si envías 'proyectoId', debe ser un número entero mayor a 0.",
       });
     }
-
-    // En este punto el payload es válido.
-    // Como el comentario original dice "Stub para ajustes manuales futuros",
-    // todavía NO modificamos la base de datos para no arriesgar PPP ni stock.
-    // Solo devolvemos una respuesta clara y un resumen de lo que se recibió.
 
     return res.status(201).json({
       ok: true,
@@ -839,7 +856,7 @@ app.get("/ingresos", async (req, res) => {
       const query = q.trim();
 
       where.OR = [
-        // nombre del proveedor (relación 1-a-1)
+        // nombre del proveedor
         {
           proveedor: {
             is: {
@@ -874,7 +891,7 @@ app.get("/ingresos", async (req, res) => {
         skip,
         take: sizeNumber,
         include: {
-          proveedor: true, // para poder usar proveedor.nombre
+          proveedor: true,
           items: {
             include: {
               producto: {
@@ -889,14 +906,12 @@ app.get("/ingresos", async (req, res) => {
 
     const data = ingresos.map((ing) => ({
       id: ing.id,
-      // 👇 lo que muestra la columna PROVEEDOR en el front
       proveedor: ing.proveedor ? ing.proveedor.nombre : "",
-      // 👇 el front arma el texto del documento con estos 2 campos
-      tipoDocumento: ing.tipoDocumento,         // FACTURA | GUIA | NC
-      numeroDocumento: ing.numeroDocumento,     // string
+      tipoDocumento: ing.tipoDocumento,
+      numeroDocumento: ing.numeroDocumento,
       observacion: ing.observacion ?? "",
       fecha: ing.fecha.toISOString(),
-      estado: "Confirmado", // por ahora fijo
+      estado: "Confirmado",
 
       items: ing.items.map((it) => ({
         sku: it.producto?.sku ?? "",
@@ -918,8 +933,6 @@ app.get("/ingresos", async (req, res) => {
 });
 
 
-
-// EDITAR cabecera de ingreso (simple)
 app.put("/ingresos/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) {
@@ -958,7 +971,6 @@ app.post("/ingresos", async (req, res) => {
   console.log("[POST /ingresos] body:", JSON.stringify(req.body, null, 2));
   try {
     const result = await crearIngreso(req.body);
-    // Para compatibilidad, respondemos algo simple:
     res.status(201).json({
       ok: true,
       ingresoId: result.ingreso.id,
@@ -1030,7 +1042,7 @@ async function resolveProveedor(tx, payload) {
 
     if (nombre) {
       const prov = await tx.proveedor.findFirst({
-        where: { nombre }, // 👈 sin mode, SQLite no lo soporta
+        where: { nombre },
       });
       if (!prov) {
         throw new Error(`Proveedor con nombre "${nombre}" no encontrado.`);
@@ -1187,7 +1199,7 @@ app.post("/proyectos/salidas", async (req, res) => {
       const mov = await tx.movimientoProyecto.create({
         data: {
           tipo: ProyectoMovTipo.SALIDA,
-          tipoDocumento: null, // por ahora
+          tipoDocumento: null,
           numeroDocumento:
             documento && String(documento).trim() !== ""
               ? String(documento).trim()
@@ -1223,7 +1235,7 @@ app.post("/proyectos/salidas", async (req, res) => {
         await registrarSalida(tx, {
           productoId: prod.id,
           cantidad: it.cantidad,
-          refTipo: RefTipo.MOVIMIENTO_PROYECTO_SALIDA, // según tu enum RefTipo
+          refTipo: RefTipo.MOVIMIENTO_PROYECTO_SALIDA,
           refId: mov.id,
         });
       }
@@ -1388,11 +1400,9 @@ app.get("/proyectos/movimientos", async (req, res) => {
         skip,
         take: sizeNumber,
         include: {
-          // 👇 IMPORTANTE: cargar el proyecto
           proyecto: {
             select: { nombre: true },
           },
-          // 👇 y los productos de los ítems
           items: {
             include: {
               producto: {
@@ -1412,7 +1422,7 @@ app.get("/proyectos/movimientos", async (req, res) => {
       id: m.id,
       fecha: m.fecha.toISOString(),
       tipo: m.tipo === "SALIDA" ? "Salida" : "Retorno",
-      proyecto: m.proyecto?.nombre ?? "",          // 👈 nombre plano
+      proyecto: m.proyecto?.nombre ?? "",
       documento: m.numeroDocumento ?? "",
       observacion: m.observacion ?? "",
       items: m.items.map((it) => ({
@@ -1475,8 +1485,8 @@ app.get("/reportes/ppp.csv", async (_req, res) => {
         proveedor: p.proveedor?.nombre ?? "",
         stockActual: p.stock,
         stockMinimo: p.stockMinimo,
-        ppp: pppNumber.toFixed(2),      // PPP con 2 decimales
-        valorTotal: Math.round(total),  // total redondeado
+        ppp: pppNumber.toFixed(2),
+        valorTotal: Math.round(total),
       };
     });
 
@@ -1504,7 +1514,6 @@ app.get("/reportes/ppp.csv", async (_req, res) => {
                 .replace(/\s+/g, "")
                 .replace(/[()]/g, "")
             ] ?? r[
-              // fallback por si acaso
               ({
                 "Fecha reporte": "fechaReporte",
                 SKU: "sku",
@@ -1562,7 +1571,6 @@ app.get("/reportes/ppp_historico.csv", async (_req, res) => {
   }
 
   try {
-    // OJO: aquí usamos createdAt, NO "fecha"
     const movimientos = await prisma.stockMovimiento.findMany({
       orderBy: [
         { createdAt: "asc" },
@@ -1590,18 +1598,18 @@ app.get("/reportes/ppp_historico.csv", async (_req, res) => {
       const sku = m.producto?.sku ?? "";
       const nombreProd = m.producto?.nombre ?? "";
 
-      const tipo = m.tipo;          // enum como string
-      const refTipo = m.refTipo;    // enum como string
+      const tipo = m.tipo;
+      const refTipo = m.refTipo;
       const refId = m.refId ?? "";
 
-      const cantidad = m.cantidad;  // int
+      const cantidad = m.cantidad;
       const costoUnitario = m.costoUnitario
         ? Number(m.costoUnitario)
         : 0;
       const pppAntes = m.pppAntes ? Number(m.pppAntes) : 0;
       const pppDespues = m.pppDespues ? Number(m.pppDespues) : 0;
 
-      // Valor del movimiento (siempre positivo; el signo lo interpreta contabilidad según "tipo")
+      // Valor del movimiento
       const valorMovimiento = cantidad * costoUnitario;
 
       detalle.push({
@@ -1653,9 +1661,9 @@ app.get("/reportes/ppp_historico.csv", async (_req, res) => {
         .map(escapeCsv)
         .join(";")
     );
-    lines.push(""); // línea en blanco
+    lines.push("");
 
-    // ----- SECCIÓN 1: RESUMEN POR PRODUCTO -----
+    // RESUMEN POR PRODUCTO
     lines.push(escapeCsv("RESUMEN POR PRODUCTO"));
     const resumenHeaders = [
       "SKU",
@@ -1678,21 +1686,21 @@ app.get("/reportes/ppp_historico.csv", async (_req, res) => {
       );
     }
 
-    lines.push(""); // separación
+    lines.push("");
 
-    // ----- SECCIÓN 2: DETALLE MOVIMIENTOS PPP -----
+    // DETALLE MOVIMIENTOS PPP
     lines.push(escapeCsv("DETALLE MOVIMIENTOS PPP"));
     const detalleHeaders = [
       "Fecha movimiento",
       "SKU",
       "Nombre producto",
-      "Tipo movimiento",           // INGRESO / SALIDA / AJUSTE...
+      "Tipo movimiento",
       "Cantidad",
       "Costo unitario (CLP)",
       "PPP antes (CLP)",
       "PPP después (CLP)",
       "Valor movimiento (CLP)",
-      "Ref tipo",                 // INGRESO / SALIDA / AJUSTE...
+      "Ref tipo",
       "Ref ID",
     ];
     lines.push(detalleHeaders.map(escapeCsv).join(";"));
@@ -1882,7 +1890,6 @@ app.get("/reportes/centros_costo.csv", async (req, res) => {
 
     const where = {};
 
-    // Filtro texto (igual que /proyectos)
     if (typeof q === "string" && q.trim() !== "") {
       const query = q.trim();
       where.OR = [
@@ -1892,7 +1899,6 @@ app.get("/reportes/centros_costo.csv", async (req, res) => {
       ];
     }
 
-    // Solo activos opcional
     if (String(soloActivos) === "1") {
       where.activo = true;
     }
@@ -1900,7 +1906,7 @@ app.get("/reportes/centros_costo.csv", async (req, res) => {
     const proyectos = await prisma.proyecto.findMany({
       where,
       orderBy: [
-        { activo: "desc" }, // activos primero
+        { activo: "desc" },
         { nombre: "asc" },
       ],
       include: {
@@ -2162,7 +2168,7 @@ app.get("/proveedores", async (req, res) => {
       where.activo = true;
     }
 
-    // Búsqueda por nombre / RUT (SIN mode: "insensitive" porque usamos SQLite)
+    // Búsqueda por nombre / RUT
     if (typeof q === "string" && q.trim() !== "") {
       const query = q.trim();
       where.OR = [
@@ -2174,7 +2180,7 @@ app.get("/proveedores", async (req, res) => {
     const rows = await prisma.proveedor.findMany({
       where,
       orderBy: { nombre: "asc" },
-      take: 30, // límite razonable para el combo/buscador
+      take: 30,
       select: {
         id: true,
         nombre: true,
@@ -2338,7 +2344,7 @@ app.put("/proveedores/:id", async (req, res) => {
   }
 });
 
-// "Eliminar" proveedor (baja lógica: activo = false)
+// "Eliminar" proveedor
 app.delete("/proveedores/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -2393,7 +2399,7 @@ app.post("/devoluciones/proveedor", async (req, res) => {
             connect: { id: bodega.id },
           },
           fecha: parseDate(body.fecha) || new Date(),
-          // OJO: sin tipoDocumento por ahora
+
           numeroDocumento: body.numeroDocumento
             ? String(body.numeroDocumento).trim()
             : null,
@@ -2453,7 +2459,6 @@ app.post("/devoluciones/proveedor", async (req, res) => {
       return { header, proveedor, bodega };
     });
 
-    // 👇 AHORA SÍ: responder algo al cliente
     return res.status(201).json({
       ok: true,
       devolucionId: result.header.id,
@@ -2496,7 +2501,7 @@ app.get("/devoluciones/proveedor", async (req, res) => {
 
     const where = {};
 
-    // Filtro por proveedorId (opcional)
+    // Filtro por proveedorId
     if (proveedorId != null && proveedorId !== "") {
       const pid = Number(proveedorId);
       if (Number.isFinite(pid)) {
@@ -2504,7 +2509,7 @@ app.get("/devoluciones/proveedor", async (req, res) => {
       }
     }
 
-    // Filtro por texto libre (proveedor, rut, doc, observación)
+    // Filtro por proveedor, rut, doc, observación
     if (typeof q === "string" && q.trim() !== "") {
       const query = q.trim();
       where.OR = [
@@ -2521,7 +2526,7 @@ app.get("/devoluciones/proveedor", async (req, res) => {
       ];
     }
 
-    // Filtro por rango de fechas (opcional)
+    // Filtro por rango de fechas
     const fechaFilter = {};
     if (typeof fechaDesde === "string" && fechaDesde.trim() !== "") {
       const d = new Date(fechaDesde);
@@ -2556,7 +2561,6 @@ app.get("/devoluciones/proveedor", async (req, res) => {
       prisma.devolucionProveedor.count({ where }),
     ]);
 
-    // Adaptamos al shape que va a consumir React
     const data = rows.map((d) => {
       let totalCantidad = 0;
       let totalValor = 0;
@@ -2597,7 +2601,7 @@ app.get("/devoluciones/proveedor", async (req, res) => {
           : null,
         totalCantidad,
         totalValor,
-        items, // si en la lista solo quieres resumen, en el front puedes ignorar esto
+        items,
       };
     });
 
@@ -2688,7 +2692,7 @@ app.get("/devoluciones/proveedor/:id", async (req, res) => {
 });
 
 
-// Listar subcategorías (opcionalmente filtradas por categoriaId)
+// Listar subcategorías
 app.get("/subcategorias", async (req, res) => {
   try {
     const { categoriaId } = req.query;
@@ -2707,7 +2711,7 @@ app.get("/subcategorias", async (req, res) => {
     const subcategorias = await prisma.subcategoria.findMany({
       where,
       include: {
-        categoria: true, // así el front puede mostrar código/nombre de la categoría
+        categoria: true,
       },
       orderBy: [
         { categoriaId: "asc" },
@@ -2780,7 +2784,7 @@ app.post("/subcategorias", async (req, res) => {
       return res.status(404).json({ error: "Categoría no encontrada" });
     }
 
-    // Evitar duplicado (respeta @@unique([categoriaId, nombre])
+    // Evitar duplicado
     const yaExiste = await prisma.subcategoria.findFirst({
       where: {
         categoriaId: catId,
@@ -2865,7 +2869,6 @@ app.put("/subcategorias/:id", async (req, res) => {
   } catch (error) {
     console.error("Error al actualizar subcategoría:", error);
 
-    // P2002 = unique constraint violation
     if (error.code === "P2002") {
       return res.status(409).json({
         error:
@@ -2890,12 +2893,10 @@ app.delete("/subcategorias/:id", async (req, res) => {
       where: { id },
     });
 
-    // 204 = No Content
     res.status(204).send();
   } catch (error) {
     console.error("Error al eliminar subcategoría:", error);
 
-    // P2003 = violation of foreign key constraint (productos asociados)
     if (error.code === "P2003") {
       return res.status(409).json({
         error:
@@ -3016,6 +3017,15 @@ app.get("/proyectos/:id", async (req, res) => {
 /**
  * POST /proyectos
  */
+function normalizeNullableString(value) {
+  if (value === undefined || value === null) return null;
+
+  const str = String(value).trim();
+  if (str === "") return null;
+
+  return str;
+}
+
 app.post("/proyectos", async (req, res) => {
   try {
     const { nombre, codigo, descripcion, activo } = req.body || {};
@@ -3039,7 +3049,6 @@ app.post("/proyectos", async (req, res) => {
   } catch (e) {
     console.error("[POST /proyectos] Error:", e);
 
-    // P2002 = unique constraint violation
     if (e && e.code === "P2002") {
       return res.status(409).json({
         error:
@@ -3077,7 +3086,6 @@ app.put("/proyectos/:id", async (req, res) => {
     if (codigo === "") codigo = null;
     if (descripcion === "") descripcion = null;
 
-    // ---------- PARSEAR ACTIVO ----------
     let parsedActivo;
     if (typeof activo === "boolean") {
       parsedActivo = activo;
@@ -3093,7 +3101,6 @@ app.put("/proyectos/:id", async (req, res) => {
       descripcion,
     };
 
-    // SOLO si logramos interpretarlo como booleano, lo seteamos
     if (typeof parsedActivo === "boolean") {
       data.activo = parsedActivo;
     }
@@ -3134,7 +3141,6 @@ app.delete("/proyectos/:id", async (req, res) => {
   } catch (e) {
     console.error("[DELETE /proyectos/:id] Error:", e);
 
-    // P2003 = FK constraint (movimientos asociados)
     if (e && e.code === "P2003") {
       return res.status(409).json({
         error:
@@ -3148,7 +3154,7 @@ app.delete("/proyectos/:id", async (req, res) => {
   }
 });
 
-// PATCH /proyectos/:id/activo  -> cambiar activo/inactivo
+// PATCH /proyectos/:id/activo
 app.patch("/proyectos/:id/activo", async (req, res) => {
   const id = Number(req.params.id);
   const { activo } = req.body;

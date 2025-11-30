@@ -22,8 +22,8 @@ type Producto = {
   descripcion?: string | null;
 
   // Categoría / subcategoría
-  categoria?: string | null; // texto legible (histórico)
-  categoriaCodigo?: string | null; // EXT / DET / ACF / FUN
+  categoria?: string | null;
+  categoriaCodigo?: string | null;
   categoriaNombre?: string | null;
   subcategoriaId?: number | null;
   subcategoriaNombre?: string | null;
@@ -35,7 +35,7 @@ type Producto = {
   proveedorId?: number | null;
   imagenUrl?: string | null;
 
-  // PPP real desde backend (model Producto.ppp Decimal)
+  // PPP real desde backend
   ppp?: number | string | null;
 };
 
@@ -50,7 +50,7 @@ type Proveedor = {
 
 type Categoria = {
   id: number;
-  codigo: string; // EXT, DET, ACF, FUN
+  codigo: string;
   nombre: string;
 };
 
@@ -90,7 +90,7 @@ const CATEGORY_OPTIONS = [
 const PLACEHOLDER_IMG =
   "https://via.placeholder.com/80x80.png?text=Producto";
 
-// Base del API para exportar CSV
+// Base de API para exportar CSV
 const API_BASE =
   import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
@@ -110,14 +110,12 @@ function buildInitialSku(categoriaCodigo: string): string {
   return `${categoriaCodigo}-0001`;
 }
 
-// Normaliza la etiqueta de categoría del producto
 function getCategoriaLabelFromProducto(p: Producto): string {
   const raw = (p.categoria ?? p.categoriaNombre ?? "").trim();
 
   if (raw) {
     const lower = raw.toLowerCase();
 
-    // Corrige errores típicos
     if (lower.startsWith("act") && lower.includes("fij")) {
       return "Activos fijos";
     }
@@ -148,8 +146,10 @@ function money(n: number) {
   });
 }
 
-// Normalizar PPP a número (o null) por si viene como string de Prisma.Decimal
-function normalizePPP(raw: number | string | null | undefined): number | null {
+// Normalizar PPP a número
+function normalizePPP(
+  raw: number | string | null | undefined
+): number | null {
   if (raw === null || raw === undefined) return null;
   if (typeof raw === "number") {
     return Number.isFinite(raw) ? raw : null;
@@ -171,16 +171,10 @@ const emptyForm: ProductFormState = {
   imagenUrl: "",
 };
 
-/* =========================
-   Página
-   ========================= */
 
 export default function ProductsPage() {
   const queryClient = useQueryClient();
 
-  // -------------------------
-  // Estado UI
-  // -------------------------
   const [search, setSearch] = useState("");
   const [isOpen, setIsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -214,7 +208,6 @@ export default function ProductsPage() {
     queryKey: ["productos"],
     queryFn: async () => {
       const res = await http.get<Producto[]>("/productos");
-      // Aseguramos que ppp sea numérico cuando sea posible
       return res.data.map((p) => ({
         ...p,
         ppp: normalizePPP(p.ppp),
@@ -302,7 +295,7 @@ export default function ProductsPage() {
     proveedorSearch.trim().length > 0 &&
     proveedoresFiltrados.length > 0;
 
-  // categoría seleccionada actualmente en el formulario
+  // categoría seleccionada en el formulario
   const currentCategoria = useMemo(() => {
     if (!categorias) return null;
     return (
@@ -515,15 +508,15 @@ export default function ProductsPage() {
     setDeletingId(prod.id);
     try {
       await http.delete(`/productos/${prod.id}`);
-      await queryClient.invalidateQueries({
-        queryKey: ["productos"],
-      });
+      await queryClient.invalidateQueries({ queryKey: ["productos"] });
     } catch (err: any) {
       console.error("Error eliminando producto:", err);
-      alert(
-        err?.response?.data?.error ??
-          "Error eliminando el producto. Revisa la consola."
-      );
+
+      const msg =
+        err?.response?.data?.message ??
+        "No se pudo eliminar el producto. Puede que tenga ingresos o movimientos asociados.";
+
+      alert(msg);
     } finally {
       setDeletingId(null);
     }
@@ -533,7 +526,6 @@ export default function ProductsPage() {
   // Subcategorías: helpers y CRUD
   // -------------------------
 
-  // Al abrir el modal, seleccionar una categoría por defecto si hay
   useEffect(() => {
     if (!isSubcatOpen) return;
     if (!categorias || categorias.length === 0) return;
@@ -588,7 +580,6 @@ export default function ProductsPage() {
           categoriaId: categoriaIdNumber,
         });
       } else {
-        // MODO CREACIÓN
         await http.post("/subcategorias", {
           nombre,
           categoriaId: categoriaIdNumber,
@@ -798,6 +789,13 @@ export default function ProductsPage() {
                       ? p.stock * ppp
                       : null;
 
+                  const stockMinimoNum =
+                    typeof p.stockMinimo === "number"
+                      ? p.stockMinimo
+                      : 0;
+                  const isStockCritical =
+                    stockMinimoNum > 0 && p.stock <= stockMinimoNum;
+
                   return (
                     <tr
                       key={p.id}
@@ -838,8 +836,16 @@ export default function ProductsPage() {
                       <td className="hidden whitespace-nowrap px-3 py-3 text-sm text-slate-600 sm:table-cell">
                         {proveedorNombre}
                       </td>
-                      <td className="whitespace-nowrap px-3 py-3 text-right text-sm text-slate-900">
-                        {p.stock}
+                      <td className="whitespace-nowrap px-3 py-3 text-right text-sm">
+                        <span
+                          className={
+                            isStockCritical
+                              ? "font-semibold text-red-600"
+                              : "text-slate-900"
+                          }
+                        >
+                          {p.stock}
+                        </span>
                       </td>
                       <td className="hidden whitespace-nowrap px-3 py-3 text-right text-sm text-slate-900 sm:table-cell">
                         {hasPPP && ppp !== null
@@ -937,9 +943,7 @@ export default function ProductsPage() {
                             className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-rose-500 focus:outline-none focus:ring-1 focus:ring-rose-500"
                             value={form.categoriaCodigo}
                             onChange={(e) =>
-                              handleCategoriaChange(
-                                e.target.value
-                              )
+                              handleCategoriaChange(e.target.value)
                             }
                           >
                             {CATEGORY_OPTIONS.map((c) => (
@@ -962,9 +966,7 @@ export default function ProductsPage() {
                           </label>
                           <select
                             className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-rose-500 focus:outline-none focus:ring-1 focus:ring-rose-500"
-                            value={
-                              form.subcategoriaId ?? ""
-                            }
+                            value={form.subcategoriaId ?? ""}
                             onChange={(e) =>
                               setForm((prev) => ({
                                 ...prev,
@@ -1058,43 +1060,36 @@ export default function ProductsPage() {
                               }
                               value={proveedorSearch}
                               onChange={(e) =>
-                                setProveedorSearch(
-                                  e.target.value
-                                )
+                                setProveedorSearch(e.target.value)
                               }
                               disabled={loadingProveedores}
                               className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm placeholder:text-slate-400 focus:border-rose-500 focus:outline-none focus:ring-1 focus:ring-rose-500"
                             />
                             {hayProveedoresSugeridos && (
                               <div className="absolute z-30 mt-1 max-h-60 w-full overflow-auto rounded-xl border border-slate-200 bg-white shadow-lg">
-                                {proveedoresFiltrados.map(
-                                  (prov) => (
-                                    <button
-                                      key={prov.id}
-                                      type="button"
-                                      onClick={() => {
-                                        setForm((prev) => ({
-                                          ...prev,
-                                          proveedorId:
-                                            prov.id,
-                                        }));
-                                        setProveedorSearch(
-                                          ""
-                                        );
-                                      }}
-                                      className="flex w-full flex-col items-start px-3 py-2 text-left text-sm hover:bg-slate-50"
-                                    >
-                                      <span className="font-medium text-slate-900">
-                                        {prov.nombre}
+                                {proveedoresFiltrados.map((prov) => (
+                                  <button
+                                    key={prov.id}
+                                    type="button"
+                                    onClick={() => {
+                                      setForm((prev) => ({
+                                        ...prev,
+                                        proveedorId: prov.id,
+                                      }));
+                                      setProveedorSearch("");
+                                    }}
+                                    className="flex w-full flex-col items-start px-3 py-2 text-left text-sm hover:bg-slate-50"
+                                  >
+                                    <span className="font-medium text-slate-900">
+                                      {prov.nombre}
+                                    </span>
+                                    {prov.rut && (
+                                      <span className="text-[11px] text-slate-500">
+                                        RUT: {prov.rut}
                                       </span>
-                                      {prov.rut && (
-                                        <span className="text-[11px] text-slate-500">
-                                          RUT: {prov.rut}
-                                        </span>
-                                      )}
-                                    </button>
-                                  )
-                                )}
+                                    )}
+                                  </button>
+                                ))}
                               </div>
                             )}
                           </div>
