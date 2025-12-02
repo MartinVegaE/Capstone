@@ -2,7 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
-const { PrismaClient, RefTipo, ProyectoMovTipo, Prisma} = require("@prisma/client");
+const { PrismaClient, RefTipo, ProyectoMovTipo, Prisma } = require("@prisma/client");
 
 const prisma = new PrismaClient();
 const app = express();
@@ -1526,7 +1526,7 @@ app.get("/reportes/ppp.csv", async (_req, res) => {
                 "PPP (CLP)": "ppp",
                 "Valor total stock (CLP)": "valorTotal",
               }[h] || h.toLowerCase())
-            ];
+              ];
 
             const s =
               v === null || v === undefined ? "" : String(v);
@@ -2172,8 +2172,8 @@ app.get("/proveedores", async (req, res) => {
     if (typeof q === "string" && q.trim() !== "") {
       const query = q.trim();
       where.OR = [
-        { nombre: { contains: query } },
-        { rut: { contains: query } },
+        { nombre: { contains: query, mode: "insensitive" } },
+        { rut: { contains: query, mode: "insensitive" } },
       ];
     }
 
@@ -2227,8 +2227,8 @@ app.post("/proveedores", async (req, res) => {
       typeof b.nombre === "string"
         ? b.nombre.trim()
         : typeof b.name === "string"
-        ? b.name.trim()
-        : "";
+          ? b.name.trim()
+          : "";
 
     if (!nombre) {
       return res
@@ -2246,8 +2246,8 @@ app.post("/proveedores", async (req, res) => {
         typeof b.activo === "boolean"
           ? b.activo
           : b.activo === "false"
-          ? false
-          : true,
+            ? false
+            : true,
     };
 
     const created = await prisma.proveedor.create({ data });
@@ -2283,8 +2283,8 @@ app.put("/proveedores/:id", async (req, res) => {
         typeof b.nombre === "string"
           ? b.nombre.trim()
           : typeof b.name === "string"
-          ? b.name.trim()
-          : "";
+            ? b.name.trim()
+            : "";
       if (!nombre) {
         return res
           .status(400)
@@ -2322,8 +2322,8 @@ app.put("/proveedores/:id", async (req, res) => {
         typeof b.activo === "boolean"
           ? b.activo
           : b.activo === "false"
-          ? false
-          : true;
+            ? false
+            : true;
     }
 
     const updated = await prisma.proveedor.update({
@@ -2588,16 +2588,16 @@ app.get("/devoluciones/proveedor", async (req, res) => {
         observacion: d.observacion ?? "",
         proveedor: d.proveedor
           ? {
-              id: d.proveedor.id,
-              nombre: d.proveedor.nombre,
-              rut: d.proveedor.rut ?? "",
-            }
+            id: d.proveedor.id,
+            nombre: d.proveedor.nombre,
+            rut: d.proveedor.rut ?? "",
+          }
           : null,
         bodega: d.bodega
           ? {
-              id: d.bodega.id,
-              nombre: d.bodega.nombre,
-            }
+            id: d.bodega.id,
+            nombre: d.bodega.nombre,
+          }
           : null,
         totalCantidad,
         totalValor,
@@ -2668,16 +2668,16 @@ app.get("/devoluciones/proveedor/:id", async (req, res) => {
       observacion: d.observacion ?? "",
       proveedor: d.proveedor
         ? {
-            id: d.proveedor.id,
-            nombre: d.proveedor.nombre,
-            rut: d.proveedor.rut ?? "",
-          }
+          id: d.proveedor.id,
+          nombre: d.proveedor.nombre,
+          rut: d.proveedor.rut ?? "",
+        }
         : null,
       bodega: d.bodega
         ? {
-            id: d.bodega.id,
-            nombre: d.bodega.nombre,
-          }
+          id: d.bodega.id,
+          nombre: d.bodega.nombre,
+        }
         : null,
       totalCantidad,
       totalValor,

@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -44,31 +44,31 @@ enum ProyectoMovTipo {
  */
 
 model Categoria {
-  id            Int           @id @default(autoincrement())
-  codigo        String        @unique  // EXT, DET, ACF, FUN
-  nombre        String        @unique
+  id            Int            @id @default(autoincrement())
+  codigo        String         @unique // EXT, DET, ACF, FUN
+  nombre        String         @unique
   subcategorias Subcategoria[]
   productos     Producto[]
 }
 
 model Subcategoria {
-  id          Int         @id @default(autoincrement())
+  id          Int        @id @default(autoincrement())
   nombre      String
   categoriaId Int
-  categoria   Categoria   @relation(fields: [categoriaId], references: [id])
+  categoria   Categoria  @relation(fields: [categoriaId], references: [id])
   productos   Producto[]
 
   @@unique([categoriaId, nombre])
 }
 
 model Proveedor {
-  id        Int                    @id @default(autoincrement())
+  id        Int     @id @default(autoincrement())
   nombre    String
-  rut       String?                @unique
+  rut       String? @unique
   email     String?
   telefono  String?
   direccion String?
-  activo    Boolean                @default(true)
+  activo    Boolean @default(true)
 
   productos             Producto[]
   ingresos              Ingreso[]
@@ -76,11 +76,11 @@ model Proveedor {
 }
 
 model Bodega {
-  id                    Int                    @id @default(autoincrement())
-  nombre                String                 @unique
-  codigo                String?                @unique
-  esPrincipal           Boolean                @default(false)
-  ubicacion             String?
+  id          Int     @id @default(autoincrement())
+  nombre      String  @unique
+  codigo      String? @unique
+  esPrincipal Boolean @default(false)
+  ubicacion   String?
 
   ingresos              Ingreso[]
   movimientosProyecto   MovimientoProyecto[]
@@ -100,24 +100,24 @@ model Proyecto {
 }
 
 model Producto {
-  id                       Int                       @id @default(autoincrement())
-  sku                      String                    @unique
-  nombre                   String
-  descripcion              String?
-  categoriaId              Int
-  categoria                Categoria                 @relation(fields: [categoriaId], references: [id])
-  subcategoriaId           Int?
-  subcategoria             Subcategoria?             @relation(fields: [subcategoriaId], references: [id])
-  proveedorId              Int
-  proveedor                Proveedor                 @relation(fields: [proveedorId], references: [id])
-  stock                    Int                       @default(0)
-  stockMinimo              Int                       @default(0)
-  ubicacion                String?
-  codigoBarras             String?                   @unique
-  imagenUrl                String?
-  creadoEn                 DateTime                  @default(now())
-  actualizadoEn            DateTime                  @updatedAt
-  ppp                      Decimal                   @default(0)
+  id             Int           @id @default(autoincrement())
+  sku            String        @unique
+  nombre         String
+  descripcion    String?
+  categoriaId    Int
+  categoria      Categoria     @relation(fields: [categoriaId], references: [id])
+  subcategoriaId Int?
+  subcategoria   Subcategoria? @relation(fields: [subcategoriaId], references: [id])
+  proveedorId    Int
+  proveedor      Proveedor     @relation(fields: [proveedorId], references: [id])
+  stock          Int           @default(0)
+  stockMinimo    Int           @default(0)
+  ubicacion      String?
+  codigoBarras   String?       @unique
+  imagenUrl      String?
+  creadoEn       DateTime      @default(now())
+  actualizadoEn  DateTime      @updatedAt
+  ppp            Decimal       @default(0) @db.Decimal(12, 2)
 
   ingresoItems             IngresoItem[]
   stockMovimientos         StockMovimiento[]
@@ -148,7 +148,7 @@ model IngresoItem {
   ingresoId     Int
   productoId    Int
   cantidad      Int
-  costoUnitario Decimal
+  costoUnitario Decimal   @db.Decimal(12, 2)
   lote          String?
   venceAt       DateTime?
 
@@ -166,9 +166,9 @@ model StockMovimiento {
   producto      Producto       @relation(fields: [productoId], references: [id])
   tipo          MovimientoTipo
   cantidad      Int
-  costoUnitario Decimal?
-  pppAntes      Decimal
-  pppDespues    Decimal
+  costoUnitario Decimal?       @db.Decimal(12, 2)
+  pppAntes      Decimal        @db.Decimal(12, 2)
+  pppDespues    Decimal        @db.Decimal(12, 2)
   refTipo       RefTipo
   refId         Int?
   createdAt     DateTime       @default(now())
@@ -181,13 +181,13 @@ model StockMovimiento {
  */
 
 model MovimientoProyecto {
-  id              Int               @id @default(autoincrement())
+  id              Int             @id @default(autoincrement())
   proyectoId      Int
-  proyecto        Proyecto          @relation(fields: [proyectoId], references: [id])
+  proyecto        Proyecto        @relation(fields: [proyectoId], references: [id])
   tipo            ProyectoMovTipo
-  fecha           DateTime          @default(now())
+  fecha           DateTime        @default(now())
   bodegaId        Int
-  bodega          Bodega            @relation(fields: [bodegaId], references: [id])
+  bodega          Bodega          @relation(fields: [bodegaId], references: [id])
   tipoDocumento   TipoDocumento?
   numeroDocumento String?
   observacion     String?
@@ -196,11 +196,11 @@ model MovimientoProyecto {
 }
 
 model MovimientoProyectoItem {
-  id            Int               @id @default(autoincrement())
+  id            Int      @id @default(autoincrement())
   movimientoId  Int
   productoId    Int
   cantidad      Int
-  costoUnitario Decimal?
+  costoUnitario Decimal? @db.Decimal(12, 2)
 
   movimiento MovimientoProyecto @relation(fields: [movimientoId], references: [id])
   producto   Producto           @relation(fields: [productoId], references: [id])
@@ -211,13 +211,13 @@ model MovimientoProyectoItem {
  */
 
 model DevolucionProveedor {
-  id              Int               @id @default(autoincrement())
-  fecha           DateTime          @default(now())
+  id              Int           @id @default(autoincrement())
+  fecha           DateTime      @default(now())
   proveedorId     Int
-  proveedor       Proveedor         @relation(fields: [proveedorId], references: [id])
+  proveedor       Proveedor     @relation(fields: [proveedorId], references: [id])
   bodegaId        Int
-  bodega          Bodega            @relation(fields: [bodegaId], references: [id])
-  tipoDocumento   TipoDocumento     @default(NOTA_CREDITO)
+  bodega          Bodega        @relation(fields: [bodegaId], references: [id])
+  tipoDocumento   TipoDocumento @default(NOTA_CREDITO)
   numeroDocumento String
   observacion     String?
 
@@ -225,11 +225,11 @@ model DevolucionProveedor {
 }
 
 model DevolucionProveedorItem {
-  id            Int                @id @default(autoincrement())
+  id            Int      @id @default(autoincrement())
   devolucionId  Int
   productoId    Int
   cantidad      Int
-  costoUnitario Decimal?
+  costoUnitario Decimal? @db.Decimal(12, 2)
 
   devolucion DevolucionProveedor @relation(fields: [devolucionId], references: [id])
   producto   Producto            @relation(fields: [productoId], references: [id])
