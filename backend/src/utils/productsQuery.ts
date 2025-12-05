@@ -22,8 +22,8 @@ export function buildProductsQuery(p: ListParams) {
   if (p.q) {
     const q = p.q.trim();
     where.OR = [
-      { nombre: { contains: q } },
-      { sku:  { contains: q } },
+      { nombre: { contains: q, mode: 'insensitive' } },
+      { sku:  { contains: q, mode: 'insensitive' } },
     ];
   }
   if (p.minStock != null) where.stock = { ...(where.stock as any), gte: Number(p.minStock) };
